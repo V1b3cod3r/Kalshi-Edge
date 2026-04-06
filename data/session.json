@@ -1,0 +1,10 @@
+{
+  "current_bankroll": 10000,
+  "starting_bankroll": 10000,
+  "positions": [],
+  "corr_groups": {},
+  "recent_win_rate": 0.58,
+  "kelly_modifier": 1.0,
+  "avoid_categories": [],
+  "max_new_positions": 5
+}

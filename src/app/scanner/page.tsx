@@ -95,11 +95,9 @@ export default function ScannerPage() {
 
       // Client-side filter to show accurate count before Claude runs
       const filtered = rawMarkets.filter((m: any) => {
-        const yesRaw = m.yes_ask ?? m.yes_bid ?? m.last_price ?? m.yes_price
-        if (yesRaw == null) return false
-        const yesPrice = yesRaw > 1 ? yesRaw / 100 : yesRaw
-        const vol = m.volume_24h ?? m.volume ?? 0
-        return yesPrice >= 0.03 && yesPrice <= 0.97 && vol >= autoMinVolume
+        // Only filter on volume — let the server handle price normalization
+        const vol = Number(m.volume_24h ?? m.volume ?? 0)
+        return vol >= autoMinVolume
       })
 
       const toScan = filtered.slice(0, autoLimit)

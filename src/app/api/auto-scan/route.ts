@@ -30,17 +30,22 @@ function normalizeMarket(m: any): MarketInput | null {
   const title = m.title || m.question || m.subtitle || m.event_title
   if (!title) return null
 
-  // YES price: Kalshi uses cents (0–100), convert to 0–1
-  // Try multiple field names in order of preference
-  let yesRaw: number | undefined =
-    m.yes_ask ?? m.yes_bid ?? m.last_price ?? m.yes_price ?? undefined
+  // YES price: Kalshi uses cents (1–99), convert to 0–1
+  // Use midpoint of bid/ask when both are non-zero, else fall through candidates
+  let yesRaw: number | undefined
 
-  // If bid+ask both exist, use midpoint
-  if (m.yes_ask != null && m.yes_bid != null) {
-    yesRaw = (m.yes_ask + m.yes_bid) / 2
+  if (m.yes_ask && m.yes_bid) {
+    yesRaw = (Number(m.yes_ask) + Number(m.yes_bid)) / 2
+  } else {
+    // Try each candidate — skip zeros (means no active order)
+    for (const candidate of [m.yes_ask, m.yes_bid, m.last_price, m.yes_price]) {
+      const n = Number(candidate)
+      if (n > 0) { yesRaw = n; break }
+    }
   }
 
-  if (yesRaw == null) return null
+  // If still no price found, default to 50/50 so market isn't dropped entirely
+  if (!yesRaw) yesRaw = 50
 
   // Kalshi prices are in cents (1–99), convert to decimal
   const yes_price = yesRaw > 1 ? yesRaw / 100 : yesRaw

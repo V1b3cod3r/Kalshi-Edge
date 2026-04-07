@@ -24,13 +24,9 @@ export async function GET(req: Request) {
 
   try {
     if (mode === 'series') {
-      const data = await kalshiGet(settings.kalshi_api_key, '/series', { limit: '100' })
-      const tickers = (data.series ?? []).map((s: any) => ({
-        ticker: s.ticker,
-        title: s.title,
-        category: s.category,
-      }))
-      return NextResponse.json({ count: tickers.length, series: tickers })
+      const data = await kalshiGet(settings.kalshi_api_key, '/series', { limit: '20' })
+      const tickers = (data.series ?? []).map((s: any) => `${s.ticker} | ${s.category} | ${s.title}`)
+      return new Response(tickers.join('\n'), { headers: { 'Content-Type': 'text/plain' } })
     }
 
     if (mode === 'events') {

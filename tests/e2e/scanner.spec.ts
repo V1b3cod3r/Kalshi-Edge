@@ -59,17 +59,15 @@ test.describe('Scanner Page - Auto-Scan UI', () => {
   })
 
   test('performs auto-scan with loading states and shows results', async ({ page }) => {
-    // Phase 1: mock Kalshi markets — use regex to match URL with query string
-    await page.route(/\/api\/kalshi\/markets/, async (route) => {
+    // Use explicit full URL so route matching is unambiguous (regex missed query strings)
+    await page.route('http://localhost:3000/api/kalshi/markets*', async (route) => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify({ markets: mockKalshiMarkets, cursor: null }),
       })
     })
-
-    // Phase 2: mock the auto-scan endpoint
-    await page.route(/\/api\/auto-scan/, async (route) => {
+    await page.route('http://localhost:3000/api/auto-scan', async (route) => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -81,15 +79,17 @@ test.describe('Scanner Page - Auto-Scan UI', () => {
       })
     })
 
+    // Wait for auto-scan response before asserting results
+    const autoScanDone = page.waitForResponse('http://localhost:3000/api/auto-scan')
     await page.getByRole('button', { name: 'Scan Kalshi Now' }).click()
+    await autoScanDone
 
-    // Wait for results — skip the ephemeral loading state check
-    await expect(page.getByText(/Will the Fed cut rates|Market Scan Results|Top 3/i)).toBeVisible({ timeout: 30000 })
+    // ScannerTable always renders "Ranked Opportunities" heading when rows exist
+    await expect(page.getByText('Ranked Opportunities')).toBeVisible({ timeout: 10000 })
   })
 
   test('shows error message on scan failure', async ({ page }) => {
-    // Mock Kalshi fetch to return an error
-    await page.route(/\/api\/kalshi\/markets/, async (route) => {
+    await page.route('http://localhost:3000/api/kalshi/markets*', async (route) => {
       await route.fulfill({
         status: 400,
         contentType: 'application/json',
@@ -99,8 +99,8 @@ test.describe('Scanner Page - Auto-Scan UI', () => {
 
     await page.getByRole('button', { name: 'Scan Kalshi Now' }).click()
 
-    // Toast auto-dismisses after 3s — check within 2s of click
-    await expect(page.getByText(/API key|Settings/i)).toBeVisible({ timeout: 2000 })
+    // Match the specific toast message (not the nav "Settings" link)
+    await expect(page.getByText('Kalshi API key not configured. Please add it in Settings.')).toBeVisible({ timeout: 2000 })
   })
 
   test('category dropdown has expected options', async ({ page }) => {

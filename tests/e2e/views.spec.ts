@@ -19,7 +19,7 @@ test.describe('Views Page', () => {
   })
 
   test('loads the views page with heading', async ({ page }) => {
-    await expect(page.getByRole('heading', { name: 'Macro Views' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Macro Views', exact: true })).toBeVisible()
   })
 
   test('shows empty state when no views exist', async ({ page }) => {

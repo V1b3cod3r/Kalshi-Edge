@@ -32,6 +32,7 @@ function LoadingSkeleton() {
 
 export default function AnalyzePage() {
   const [title, setTitle] = useState('')
+  const [ticker, setTicker] = useState('')
   const [yesPrice, setYesPrice] = useState('')
   const [noPrice, setNoPrice] = useState('')
   const [resolutionDate, setResolutionDate] = useState('')
@@ -177,7 +178,7 @@ export default function AnalyzePage() {
             Market Details
           </h2>
 
-          {/* Title */}
+          {/* Title + Ticker */}
           <div>
             <label style={labelStyle}>Market Title *</label>
             <textarea
@@ -186,6 +187,17 @@ export default function AnalyzePage() {
               rows={2}
               placeholder='e.g., "Will the Fed cut rates at the May 2026 FOMC meeting?"'
               style={{ ...inputStyle, resize: 'vertical' }}
+            />
+          </div>
+
+          <div>
+            <label style={labelStyle}>Market Ticker</label>
+            <input
+              type="text"
+              value={ticker}
+              onChange={(e) => setTicker(e.target.value.toUpperCase())}
+              placeholder="e.g., FED-25MAY-T5.25 (required to execute trade)"
+              style={inputStyle}
             />
           </div>
 
@@ -370,6 +382,7 @@ export default function AnalyzePage() {
             <AnalysisResult
               markdown={result}
               title={title}
+              ticker={ticker || undefined}
               yesPrice={yesPriceNorm}
               noPrice={noPrice ? normalizePrice(noPrice) : 1 - yesPriceNorm}
               bankroll={bankroll}

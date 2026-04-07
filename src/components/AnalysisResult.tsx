@@ -2,6 +2,8 @@
 
 import { useState } from 'react'
 
+type TradeState = 'idle' | 'confirm' | 'loading' | 'success' | 'error'
+
 interface ParsedAnalysis {
   title: string
   pData: number | null
@@ -120,6 +122,7 @@ function MarkdownRenderer({ content }: { content: string }) {
 interface AnalysisResultProps {
   markdown: string
   title: string
+  ticker?: string
   yesPrice: number
   noPrice: number
   bankroll?: number
@@ -128,11 +131,15 @@ interface AnalysisResultProps {
 export default function AnalysisResult({
   markdown,
   title,
+  ticker,
   yesPrice,
   noPrice,
   bankroll = 10000,
 }: AnalysisResultProps) {
   const [showFull, setShowFull] = useState(false)
+  const [tradeState, setTradeState] = useState<TradeState>('idle')
+  const [tradeError, setTradeError] = useState<string | null>(null)
+  const [tradeResult, setTradeResult] = useState<any>(null)
   const parsed = parseAnalysis(markdown, title)
 
   const classificationColors = {
@@ -153,6 +160,40 @@ export default function AnalysisResult({
     : parsed.recommendedSizePct
     ? (parsed.recommendedSizePct / 100) * bankroll
     : null
+
+  const tradeDirection = parsed.direction === 'YES' || parsed.direction === 'NO' ? parsed.direction : null
+  const pricePerContract = tradeDirection === 'YES' ? yesPrice : noPrice
+  const contracts = recommendedDollars !== null && pricePerContract > 0
+    ? Math.floor(recommendedDollars / pricePerContract)
+    : 0
+  const priceCents = Math.round(pricePerContract * 100)
+  const canExecute = parsed.action === 'BET' && tradeDirection !== null && !!ticker && contracts >= 1
+
+  const executeTrade = async () => {
+    if (!ticker || !tradeDirection) return
+    setTradeState('loading')
+    setTradeError(null)
+    try {
+      const res = await fetch('/api/trade', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ticker,
+          side: tradeDirection.toLowerCase(),
+          count: contracts,
+          price_cents: priceCents,
+          title,
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Trade failed')
+      setTradeResult(data)
+      setTradeState('success')
+    } catch (err: any) {
+      setTradeError(err.message || 'Trade execution failed')
+      setTradeState('error')
+    }
+  }
 
   return (
     <div className="space-y-4">
@@ -224,6 +265,142 @@ export default function AnalysisResult({
           </div>
         </div>
       </div>
+
+      {/* Execute Trade Panel */}
+      {parsed.action === 'BET' && tradeDirection && (
+        <div
+          className="rounded-xl border p-5"
+          style={{
+            backgroundColor: '#0d1f12',
+            borderColor: tradeState === 'success' ? '#22c55e60' : tradeState === 'error' ? '#ef444460' : '#22c55e30',
+          }}
+        >
+          <h3 className="text-sm font-semibold uppercase tracking-wider mb-4" style={{ color: '#94a3b8' }}>
+            Execute Trade
+          </h3>
+
+          {tradeState === 'success' && tradeResult ? (
+            <div className="space-y-3">
+              <div className="flex items-center gap-2">
+                <div className="w-2 h-2 rounded-full bg-green-500" />
+                <span className="text-sm font-semibold" style={{ color: '#22c55e' }}>
+                  Order placed successfully
+                </span>
+              </div>
+              <div className="grid grid-cols-2 gap-3 text-xs" style={{ color: '#94a3b8' }}>
+                <div>Order ID: <span style={{ color: '#f1f5f9' }}>{tradeResult.order?.order_id}</span></div>
+                <div>Status: <span style={{ color: '#22c55e' }}>{tradeResult.order?.status}</span></div>
+                <div>Contracts: <span style={{ color: '#f1f5f9' }}>{tradeResult.position?.contracts}</span></div>
+                <div>Total Cost: <span style={{ color: '#f1f5f9' }}>${tradeResult.total_cost?.toFixed(2)}</span></div>
+              </div>
+              <button
+                onClick={() => setTradeState('idle')}
+                className="text-xs"
+                style={{ color: '#64748b' }}
+              >
+                Reset
+              </button>
+            </div>
+          ) : tradeState === 'error' ? (
+            <div className="space-y-3">
+              <p className="text-sm" style={{ color: '#ef4444' }}>{tradeError}</p>
+              <button
+                onClick={() => setTradeState('idle')}
+                className="text-xs px-3 py-1 rounded-lg"
+                style={{ backgroundColor: '#1e1e2e', color: '#94a3b8' }}
+              >
+                Try again
+              </button>
+            </div>
+          ) : tradeState === 'confirm' ? (
+            <div className="space-y-4">
+              <div
+                className="rounded-lg p-4 space-y-2 text-sm"
+                style={{ backgroundColor: '#0a1a0d', borderColor: '#1a3a1e', borderWidth: '1px', borderStyle: 'solid' }}
+              >
+                <div className="flex justify-between">
+                  <span style={{ color: '#64748b' }}>Ticker</span>
+                  <span className="font-mono font-semibold" style={{ color: '#f1f5f9' }}>{ticker}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span style={{ color: '#64748b' }}>Direction</span>
+                  <span className="font-semibold" style={{ color: directionColor }}>{tradeDirection}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span style={{ color: '#64748b' }}>Contracts</span>
+                  <span style={{ color: '#f1f5f9' }}>{contracts}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span style={{ color: '#64748b' }}>Limit Price</span>
+                  <span style={{ color: '#f1f5f9' }}>${pricePerContract.toFixed(2)} ({priceCents}¢)</span>
+                </div>
+                <div className="flex justify-between border-t pt-2" style={{ borderColor: '#1e3a20' }}>
+                  <span className="font-semibold" style={{ color: '#94a3b8' }}>Total Cost</span>
+                  <span className="font-bold" style={{ color: '#22c55e' }}>
+                    ${(contracts * pricePerContract).toFixed(2)}
+                  </span>
+                </div>
+              </div>
+              <div className="flex gap-3">
+                <button
+                  onClick={executeTrade}
+                  className="flex-1 py-2.5 rounded-xl text-sm font-semibold"
+                  style={{ backgroundColor: '#16a34a', color: '#fff', cursor: 'pointer' }}
+                >
+                  Confirm & Place Order
+                </button>
+                <button
+                  onClick={() => setTradeState('idle')}
+                  className="px-4 py-2.5 rounded-xl text-sm"
+                  style={{ backgroundColor: '#1e1e2e', color: '#94a3b8', cursor: 'pointer' }}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          ) : tradeState === 'loading' ? (
+            <div className="flex items-center gap-3 py-2">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="animate-spin">
+                <line x1="12" y1="2" x2="12" y2="6" /><line x1="12" y1="18" x2="12" y2="22" />
+                <line x1="4.93" y1="4.93" x2="7.76" y2="7.76" /><line x1="16.24" y1="16.24" x2="19.07" y2="19.07" />
+                <line x1="2" y1="12" x2="6" y2="12" /><line x1="18" y1="12" x2="22" y2="12" />
+                <line x1="4.93" y1="19.07" x2="7.76" y2="16.24" /><line x1="16.24" y1="7.76" x2="19.07" y2="4.93" />
+              </svg>
+              <span className="text-sm" style={{ color: '#94a3b8' }}>Placing order with Kalshi...</span>
+            </div>
+          ) : (
+            // idle
+            <div className="space-y-3">
+              {!ticker ? (
+                <p className="text-xs" style={{ color: '#64748b' }}>
+                  Enter a Market Ticker above to enable trade execution.
+                </p>
+              ) : !canExecute ? (
+                <p className="text-xs" style={{ color: '#64748b' }}>
+                  {contracts < 1
+                    ? `Position size too small for 1 contract at ${(pricePerContract * 100).toFixed(0)}¢.`
+                    : 'Analysis must recommend a BET to execute.'}
+                </p>
+              ) : (
+                <div className="flex items-center justify-between">
+                  <div className="text-sm" style={{ color: '#94a3b8' }}>
+                    <span className="font-semibold" style={{ color: '#f1f5f9' }}>{contracts} contract{contracts !== 1 ? 's' : ''}</span>
+                    {' '}· {tradeDirection} · {ticker} ·{' '}
+                    <span style={{ color: '#22c55e' }}>${(contracts * pricePerContract).toFixed(2)}</span>
+                  </div>
+                  <button
+                    onClick={() => setTradeState('confirm')}
+                    className="px-4 py-2 rounded-xl text-sm font-semibold"
+                    style={{ backgroundColor: '#22c55e', color: '#0a1a0d', cursor: 'pointer' }}
+                  >
+                    Execute Trade
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Probability Estimate */}
       {(parsed.pData !== null || parsed.pBlended !== null || parsed.pMarket !== null) && (

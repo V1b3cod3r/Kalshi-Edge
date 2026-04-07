@@ -96,7 +96,7 @@ export default function ScannerPage() {
       // Client-side filter to show accurate count before Claude runs
       const filtered = rawMarkets.filter((m: any) => {
         const vol = Number(m.volume_24h ?? m.volume ?? 0)
-        return vol > 0 && vol >= autoMinVolume
+        return vol >= autoMinVolume
       })
 
       const toScan = filtered.slice(0, autoLimit)

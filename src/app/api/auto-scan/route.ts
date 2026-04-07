@@ -31,15 +31,30 @@ function normalizeMarket(m: any): MarketInput | null {
   if (!title) return null
 
   // YES price: Kalshi uses cents (1–99), convert to 0–1
-  // Use midpoint of bid/ask when both are non-zero, else fall through candidates
   let yesRaw: number | undefined
 
-  if (m.yes_ask && m.yes_bid) {
-    yesRaw = (Number(m.yes_ask) + Number(m.yes_bid)) / 2
+  const ya = Number(m.yes_ask ?? 0)
+  const yb = Number(m.yes_bid ?? 0)
+  const na = Number(m.no_ask ?? 0)
+  const nb = Number(m.no_bid ?? 0)
+
+  if (ya > 0 && yb > 0) {
+    yesRaw = (ya + yb) / 2
+  } else if (ya > 0) {
+    yesRaw = ya
+  } else if (yb > 0) {
+    yesRaw = yb
+  } else if (na > 0 && nb > 0) {
+    // Derive YES from NO midpoint
+    yesRaw = 100 - (na + nb) / 2
+  } else if (na > 0) {
+    yesRaw = 100 - na
+  } else if (nb > 0) {
+    yesRaw = 100 - nb
   } else {
-    // Try each candidate — skip zeros (means no active order)
-    for (const candidate of [m.yes_ask, m.yes_bid, m.last_price, m.yes_price]) {
-      const n = Number(candidate)
+    // Fall back to last_price or yes_price
+    for (const candidate of [m.last_price, m.yes_price, m.previous_yes_ask, m.previous_yes_bid]) {
+      const n = Number(candidate ?? 0)
       if (n > 0) { yesRaw = n; break }
     }
   }
@@ -122,9 +137,7 @@ export async function POST(req: NextRequest) {
       .filter((m): m is MarketInput => m !== null)
       // Remove near-certain markets (no edge at extremes)
       .filter((m) => m.yes_price >= 0.03 && m.yes_price <= 0.97)
-      // Drop zero-volume markets entirely — they're illiquid/placeholder and untradeable
-      .filter((m) => (m.volume_24h ?? 0) > 0)
-      // Apply caller's min volume filter on top
+      // Apply min volume filter (default 0 = allow any)
       .filter((m) => (m.volume_24h ?? 0) >= min_volume)
       // Sort by volume descending (most liquid = most tradeable)
       .sort((a, b) => (b.volume_24h ?? 0) - (a.volume_24h ?? 0))

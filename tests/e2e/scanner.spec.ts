@@ -59,43 +59,55 @@ test.describe('Scanner Page - Auto-Scan UI', () => {
   })
 
   test('performs auto-scan with loading states and shows results', async ({ page }) => {
-    // Use explicit full URL so route matching is unambiguous (regex missed query strings)
-    await page.route('http://localhost:3000/api/kalshi/markets*', async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({ markets: mockKalshiMarkets, cursor: null }),
-      })
-    })
-    await page.route('http://localhost:3000/api/auto-scan', async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({
-          result: mockScanResult,
-          markets_scanned: 3,
-          markets: mockKalshiMarkets,
-        }),
-      })
-    })
+    // Function-predicate routes — most reliable, matches pathname only
+    await page.route(
+      (url) => url.pathname === '/api/kalshi/markets',
+      async (route) => {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ markets: mockKalshiMarkets, cursor: null }),
+        })
+      }
+    )
+    await page.route(
+      (url) => url.pathname === '/api/auto-scan',
+      async (route) => {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            result: mockScanResult,
+            markets_scanned: 3,
+            markets: mockKalshiMarkets,
+          }),
+        })
+      }
+    )
 
-    // Wait for auto-scan response before asserting results
-    const autoScanDone = page.waitForResponse('http://localhost:3000/api/auto-scan')
+    // Set up response waiter BEFORE the click
+    const autoScanDone = page.waitForResponse(
+      (resp) => resp.url().includes('/api/auto-scan'),
+      { timeout: 15000 }
+    )
     await page.getByRole('button', { name: 'Scan Kalshi Now' }).click()
     await autoScanDone
 
-    // ScannerTable always renders "Ranked Opportunities" heading when rows exist
+    // ScannerTable renders "Ranked Opportunities" heading whenever rows exist
     await expect(page.getByText('Ranked Opportunities')).toBeVisible({ timeout: 10000 })
   })
 
   test('shows error message on scan failure', async ({ page }) => {
-    await page.route('http://localhost:3000/api/kalshi/markets*', async (route) => {
-      await route.fulfill({
-        status: 400,
-        contentType: 'application/json',
-        body: JSON.stringify({ error: 'Kalshi API key not configured. Please add it in Settings.' }),
-      })
-    })
+    await page.route(
+      (url) => url.pathname === '/api/kalshi/markets',
+      async (route) => {
+        await route.fulfill({
+          status: 400,
+          contentType: 'application/json',
+          body: JSON.stringify({ error: 'Kalshi API key not configured. Please add it in Settings.' }),
+        })
+      }
+    )
 
     await page.getByRole('button', { name: 'Scan Kalshi Now' }).click()
 

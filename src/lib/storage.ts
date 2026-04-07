@@ -1,12 +1,13 @@
 import fs from 'fs'
 import path from 'path'
-import { MacroView, SessionState, AppSettings } from './types'
+import { MacroView, SessionState, AppSettings, Prediction } from './types'
 
 const DATA_DIR = path.join(process.cwd(), 'data')
 
 const VIEWS_FILE = path.join(DATA_DIR, 'views.json')
 const SESSION_FILE = path.join(DATA_DIR, 'session.json')
 const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json')
+const PREDICTIONS_FILE = path.join(DATA_DIR, 'predictions.json')
 
 const DEFAULT_SESSION: SessionState = {
   current_bankroll: 10000,
@@ -111,6 +112,47 @@ export function getSession(): SessionState {
 
 export function saveSession(session: SessionState): void {
   writeJson(SESSION_FILE, session)
+}
+
+// Predictions
+export function getPredictions(): Prediction[] {
+  return readJson<Prediction[]>(PREDICTIONS_FILE, [])
+}
+
+export function savePredictions(predictions: Prediction[]): void {
+  writeJson(PREDICTIONS_FILE, predictions)
+}
+
+export function createPrediction(
+  data: Omit<Prediction, 'id' | 'created_at'>
+): Prediction {
+  const predictions = getPredictions()
+  const prediction: Prediction = {
+    ...data,
+    id: `pred-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    created_at: new Date().toISOString(),
+  }
+  predictions.unshift(prediction) // newest first
+  savePredictions(predictions)
+  return prediction
+}
+
+export function resolvePrediction(id: string, outcome: 'YES' | 'NO'): Prediction {
+  const predictions = getPredictions()
+  const idx = predictions.findIndex((p) => p.id === id)
+  if (idx === -1) throw new Error(`Prediction ${id} not found`)
+  predictions[idx] = {
+    ...predictions[idx],
+    outcome,
+    resolved_at: new Date().toISOString(),
+  }
+  savePredictions(predictions)
+  return predictions[idx]
+}
+
+export function deletePrediction(id: string): void {
+  const predictions = getPredictions()
+  savePredictions(predictions.filter((p) => p.id !== id))
 }
 
 // Settings

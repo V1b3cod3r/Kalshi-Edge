@@ -34,6 +34,23 @@ export interface SessionState {
   max_new_positions: number
 }
 
+export interface Prediction {
+  id: string
+  market_title: string
+  ticker?: string
+  category: string
+  predicted_probability: number  // Claude's YES probability (0-1)
+  direction: 'YES' | 'NO'        // Claude's recommended bet direction
+  market_price: number           // market YES price at time (0-1)
+  edge_pct: number               // claimed edge percentage
+  resolution_date?: string
+  created_at: string
+  resolved_at?: string
+  outcome?: 'YES' | 'NO'        // actual market outcome
+  notes?: string
+  source: 'scanner' | 'analyze' | 'manual'
+}
+
 export interface AppSettings {
   anthropic_api_key: string
   kalshi_api_key: string

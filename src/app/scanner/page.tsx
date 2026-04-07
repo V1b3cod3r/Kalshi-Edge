@@ -95,6 +95,24 @@ function OpportunityCard({ opp, bankroll }: { opp: Opportunity; bankroll: number
       if (!res.ok) throw new Error(data.error || 'Trade failed')
       setOrderId(data.order?.order_id)
       setTradeState('success')
+      // Auto-record prediction for calibration tracking
+      fetch('/api/predictions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          market_title: opp.title,
+          ticker: opp.ticker,
+          category: opp.ticker.startsWith('KXECON') ? 'Economics/Finance'
+            : opp.ticker.startsWith('KXPOL') ? 'Politics & Elections'
+            : 'Other/General',
+          predicted_probability: opp.my_estimate_pct / 100,
+          direction: opp.direction,
+          market_price: priceDecimal,
+          edge_pct: opp.edge_pct,
+          resolution_date: opp.resolution_date ?? undefined,
+          source: 'scanner',
+        }),
+      }).catch(() => {/* silent */})
     } catch (err: any) {
       setTradeError(err.message || 'Trade execution failed')
       setTradeState('error')

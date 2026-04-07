@@ -189,6 +189,24 @@ export default function AnalysisResult({
       if (!res.ok) throw new Error(data.error || 'Trade failed')
       setTradeResult(data)
       setTradeState('success')
+      // Auto-record prediction for calibration tracking
+      if (parsed.pBlended !== null || parsed.pData !== null) {
+        const predictedProb = (parsed.pBlended ?? parsed.pData ?? 50) / 100
+        const edge = parsed.edgeMagnitude ?? 0
+        fetch('/api/predictions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            market_title: title,
+            ticker,
+            predicted_probability: predictedProb,
+            direction: tradeDirection,
+            market_price: pricePerContract,
+            edge_pct: edge,
+            source: 'analyze',
+          }),
+        }).catch(() => {/* silent */})
+      }
     } catch (err: any) {
       setTradeError(err.message || 'Trade execution failed')
       setTradeState('error')

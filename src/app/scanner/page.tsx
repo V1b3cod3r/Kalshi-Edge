@@ -82,20 +82,25 @@ export default function ScannerPage() {
     setMarketsFound(0)
 
     try {
-      // Phase 1: fetch markets from Kalshi first to show count
-      const fetchParams = new URLSearchParams({
-        limit: String(Math.min(autoLimit * 4, 100)),
-        ...(autoCategory !== 'All' ? { category: autoCategory } : {}),
-      })
-      const fetchRes = await fetch(`/api/kalshi/markets?${fetchParams}`)
-      const fetchData = await fetchRes.json()
-      if (!fetchRes.ok) throw new Error(fetchData.error || 'Failed to fetch markets from Kalshi')
-
-      const rawMarkets: any[] = fetchData.markets || []
+      // Phase 1: fetch markets from Kalshi (up to 3 pages) to show count
+      let allRaw: any[] = []
+      let cursor: string | null = null
+      for (let page = 0; page < 3; page++) {
+        const fetchParams = new URLSearchParams({
+          limit: '100',
+          ...(autoCategory !== 'All' ? { category: autoCategory } : {}),
+          ...(cursor ? { cursor } : {}),
+        })
+        const fetchRes = await fetch(`/api/kalshi/markets?${fetchParams}`)
+        const fetchData = await fetchRes.json()
+        if (!fetchRes.ok) throw new Error(fetchData.error || 'Failed to fetch markets from Kalshi')
+        allRaw.push(...(fetchData.markets || []))
+        cursor = fetchData.cursor || null
+        if (!cursor || allRaw.length >= autoLimit * 8) break
+      }
 
       // Client-side filter to show accurate count before Claude runs
-      const filtered = rawMarkets.filter((m: any) => {
-        // Skip MVE parlay bundles
+      const filtered = allRaw.filter((m: any) => {
         if (m.mve_selected_legs || String(m.ticker ?? '').includes('KXMVE')) return false
         const vol = Number(m.volume_24h_fp ?? m.volume_24h ?? m.volume_fp ?? m.volume ?? 0)
         return vol >= autoMinVolume

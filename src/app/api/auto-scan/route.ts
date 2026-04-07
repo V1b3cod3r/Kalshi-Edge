@@ -133,13 +133,30 @@ export async function POST(req: NextRequest) {
       )
     }
 
-    // Step 1: Fetch live open markets from Kalshi
-    const fetchLimit = Math.min(limit * 4, 100) // fetch more than needed so we can filter
-    const { markets: rawMarkets } = await fetchMarkets(settings.kalshi_api_key, {
-      status: 'open',
-      limit: fetchLimit,
-      ...(category && category !== 'All' ? { category } : {}),
-    })
+    // Step 1: Fetch live open markets from Kalshi, paginating until we have enough
+    // after filtering out MVE parlay bundles. Max 5 pages × 100 = 500 raw markets.
+    const PAGE_SIZE = 100
+    const MAX_PAGES = 5
+    let rawMarkets: any[] = []
+    let cursor: string | null = null
+
+    for (let page = 0; page < MAX_PAGES; page++) {
+      const result = await fetchMarkets(settings.kalshi_api_key, {
+        status: 'open',
+        limit: PAGE_SIZE,
+        ...(cursor ? { cursor } : {}),
+        ...(category && category !== 'All' ? { category } : {}),
+      })
+
+      const nonMve = result.markets.filter(
+        (m: any) => !m.mve_selected_legs && !String(m.ticker ?? '').includes('KXMVE')
+      )
+      rawMarkets.push(...nonMve)
+      cursor = result.cursor
+
+      // Stop early if we have enough candidates or no more pages
+      if (rawMarkets.length >= limit * 4 || !cursor) break
+    }
 
     // Step 2: Normalize and filter
     const normalized: MarketInput[] = rawMarkets

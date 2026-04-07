@@ -1,6 +1,17 @@
 import { NextResponse } from 'next/server'
 import { getSettings } from '@/lib/storage'
-import { fetchMarkets } from '@/lib/kalshi'
+
+const KALSHI_BASE_URL = 'https://api.elections.kalshi.com/trade-api/v2'
+
+async function kalshiGet(apiKey: string, path: string, params?: Record<string, string>) {
+  const url = new URL(`${KALSHI_BASE_URL}${path}`)
+  if (params) Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v))
+  const res = await fetch(url.toString(), {
+    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+  })
+  if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`)
+  return res.json()
+}
 
 export async function GET(req: Request) {
   const settings = getSettings()
@@ -8,50 +19,32 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: 'No API key' }, { status: 400 })
   }
 
-  // ?sample=1 — return raw first page unfiltered to inspect field names and statuses
   const url = new URL(req.url)
-  if (url.searchParams.get('sample') === '1') {
-    const result = await fetchMarkets(settings.kalshi_api_key, { limit: 5 })
-    const summary = result.markets.map((m: any) => ({
-      ticker: m.ticker,
-      status: m.status,
-      is_mve: !!m.mve_selected_legs,
-      yes_ask_dollars: m.yes_ask_dollars,
-      yes_bid_dollars: m.yes_bid_dollars,
-      volume_24h_fp: m.volume_24h_fp,
-      volume_fp: m.volume_fp,
-      title: m.title?.slice(0, 60),
-    }))
-    return NextResponse.json({ total: result.markets.length, summary })
-  }
+  const mode = url.searchParams.get('mode') ?? 'series'
 
-  // Page through until we find 3 non-MVE markets
-  const found: any[] = []
-  let cursor: string | null = null
-  let pagesChecked = 0
-
-  while (found.length < 3 && pagesChecked < 10) {
-    const result = await fetchMarkets(settings.kalshi_api_key, {
-      limit: 100,
-      ...(cursor ? { cursor } : {}),
-    })
-    pagesChecked++
-
-    for (const m of result.markets) {
-      if (!m.mve_selected_legs && !String(m.ticker ?? '').includes('KXMVE')) {
-        found.push(m)
-        if (found.length >= 3) break
-      }
+  try {
+    if (mode === 'series') {
+      const data = await kalshiGet(settings.kalshi_api_key, '/series', { limit: '100' })
+      return NextResponse.json(data)
     }
 
-    cursor = result.cursor
-    if (!cursor) break
-  }
+    if (mode === 'events') {
+      const data = await kalshiGet(settings.kalshi_api_key, '/events', { limit: '20' })
+      return NextResponse.json(data)
+    }
 
-  return NextResponse.json({
-    pages_checked: pagesChecked,
-    non_mve_found: found.length,
-    note: found.length === 0 ? 'ALL markets were MVE parlays — try /api/debug?sample=1 to see raw first page' : undefined,
-    markets: found,
-  })
+    if (mode === 'sample') {
+      const data = await kalshiGet(settings.kalshi_api_key, '/markets', { limit: '5' })
+      const summary = (data.markets ?? []).map((m: any) => ({
+        ticker: m.ticker, status: m.status, is_mve: !!m.mve_selected_legs,
+        yes_ask_dollars: m.yes_ask_dollars, volume_24h_fp: m.volume_24h_fp,
+        title: m.title?.slice(0, 60),
+      }))
+      return NextResponse.json({ cursor: data.cursor, summary })
+    }
+
+    return NextResponse.json({ modes: ['series', 'events', 'sample'] })
+  } catch (err: any) {
+    return NextResponse.json({ error: err.message })
+  }
 }

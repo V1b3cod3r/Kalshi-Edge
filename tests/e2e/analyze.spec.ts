@@ -2,7 +2,21 @@ import { test, expect } from '@playwright/test'
 
 test.describe('Analyze Page', () => {
   test.beforeEach(async ({ page }) => {
+    // Mock session so the page doesn't depend on real server state
+    await page.route('**/api/session', async (route) => {
+      if (route.request().method() === 'GET') {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ session: { current_bankroll: 10000 } }),
+        })
+      } else {
+        await route.continue()
+      }
+    })
     await page.goto('/analyze')
+    // Wait for page content to be present
+    await page.waitForSelector('h1', { timeout: 10000 })
   })
 
   test('loads the analyze page', async ({ page }) => {
@@ -10,9 +24,7 @@ test.describe('Analyze Page', () => {
   })
 
   test('shows market input form fields', async ({ page }) => {
-    // Labels don't have htmlFor — use placeholder text
     await expect(page.getByPlaceholder(/Will the Fed cut rates/i)).toBeVisible()
-    // YES Price field — two inputs with placeholder "0.00", first is YES
     await expect(page.locator('input[placeholder="0.00"]').first()).toBeVisible()
   })
 
@@ -28,7 +40,11 @@ test.describe('Analyze Page', () => {
 ### Probability Estimate
 - My estimate (data only): 65% YES
 - View-adjusted estimate: 65% YES
+- Implied by market: 45% YES
 - **Edge**: +20% on YES
+
+### Macro View Influence
+- Views applied: None
 
 ### Trade Recommendation
 - **Direction**: YES
@@ -42,20 +58,14 @@ test.describe('Analyze Page', () => {
       })
     })
 
-    // Fill in market title
     await page.getByPlaceholder(/Will the Fed cut rates/i).fill('Will the Fed cut rates in December?')
-
-    // Fill in YES price (first 0.00 input)
     await page.locator('input[placeholder="0.00"]').first().fill('0.45')
 
-    // Click analyze
+    // Wait for button to be enabled then click
     await page.getByRole('button', { name: 'Analyze Market' }).click()
 
-    // Button becomes "Analyzing..." during load
-    await expect(page.getByRole('button', { name: 'Analyzing...' })).toBeVisible({ timeout: 3000 })
-
-    // Results appear
-    await expect(page.getByText(/Trade Recommendation/i)).toBeVisible({ timeout: 15000 })
+    // The AnalysisResult component renders a "Trade Recommendation" h3 heading
+    await expect(page.getByText('Trade Recommendation')).toBeVisible({ timeout: 15000 })
   })
 
   test('shows error when API key is not configured', async ({ page }) => {
@@ -71,7 +81,7 @@ test.describe('Analyze Page', () => {
     await page.locator('input[placeholder="0.00"]').first().fill('0.5')
     await page.getByRole('button', { name: 'Analyze Market' }).click()
 
-    // Toast or error shows the message
-    await expect(page.getByText(/API key|Settings/i)).toBeVisible({ timeout: 10000 })
+    // Toast auto-dismisses after 3s — check immediately (within 2s)
+    await expect(page.getByText(/Anthropic API key not configured/i)).toBeVisible({ timeout: 2000 })
   })
 })

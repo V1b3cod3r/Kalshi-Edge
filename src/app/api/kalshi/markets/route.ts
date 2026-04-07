@@ -16,6 +16,7 @@ export async function GET(req: NextRequest) {
     const searchParams = req.nextUrl.searchParams
     const search = searchParams.get('search') || undefined
     const category = searchParams.get('category') || undefined
+    const series_ticker = searchParams.get('series_ticker') || undefined
     const limit = searchParams.get('limit') ? parseInt(searchParams.get('limit')!) : 20
     const cursor = searchParams.get('cursor') || undefined
 
@@ -24,7 +25,7 @@ export async function GET(req: NextRequest) {
       cursor,
       search,
       category,
-      status: 'open',
+      series_ticker,
     })
 
     return NextResponse.json(result)

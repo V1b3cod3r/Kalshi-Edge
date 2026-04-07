@@ -82,24 +82,29 @@ export default function ScannerPage() {
     setMarketsFound(0)
 
     try {
-      // Phase 1: fetch markets from Kalshi (up to 3 pages) to show count
-      let allRaw: any[] = []
-      let cursor: string | null = null
-      for (let page = 0; page < 3; page++) {
-        const fetchParams = new URLSearchParams({
-          limit: '100',
-          ...(autoCategory !== 'All' ? { category: autoCategory } : {}),
-          ...(cursor ? { cursor } : {}),
-        })
-        const fetchRes = await fetch(`/api/kalshi/markets?${fetchParams}`)
-        const fetchData = await fetchRes.json()
-        if (!fetchRes.ok) throw new Error(fetchData.error || 'Failed to fetch markets from Kalshi')
-        allRaw.push(...(fetchData.markets || []))
-        cursor = fetchData.cursor || null
-        if (!cursor || allRaw.length >= autoLimit * 8) break
+      // Phase 1: fetch from known series tickers (avoids the MVE parlay flood)
+      const SERIES_BY_CATEGORY: Record<string, string[]> = {
+        'Economics/Finance': ['KXFED','KXCPI','KXJOBS','INXD','NASDAQ','KXBTC','KXETH','KXTARIFF','KXGDP','KXREC'],
+        'Politics & Elections': ['KXTRUMP','PRES','KXSENATE','KXHOUSE','KXGOV'],
+        'Sports': ['KXNBA','KXNFL','KXMLB','KXNHL','KXSOCCER'],
+        'Other/General': ['KXAI','KXTECH','KXWEATHER'],
       }
+      const series = autoCategory !== 'All'
+        ? (SERIES_BY_CATEGORY[autoCategory] ?? [])
+        : Object.values(SERIES_BY_CATEGORY).flat()
 
-      // Client-side filter to show accurate count before Claude runs
+      let allRaw: any[] = []
+      await Promise.all(
+        series.map(async (s) => {
+          try {
+            const res = await fetch(`/api/kalshi/markets?series_ticker=${s}&limit=50`)
+            const data = await res.json()
+            if (res.ok) allRaw.push(...(data.markets || []))
+          } catch {}
+        })
+      )
+
+      // Client-side filter
       const filtered = allRaw.filter((m: any) => {
         if (m.mve_selected_legs || String(m.ticker ?? '').includes('KXMVE')) return false
         const vol = Number(m.volume_24h_fp ?? m.volume_24h ?? m.volume_fp ?? m.volume ?? 0)

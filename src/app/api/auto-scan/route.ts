@@ -133,29 +133,57 @@ export async function POST(req: NextRequest) {
       )
     }
 
-    // Step 1: Fetch live open markets from Kalshi, paginating until we have enough
-    // after filtering out MVE parlay bundles. Max 5 pages × 100 = 500 raw markets.
-    const PAGE_SIZE = 100
-    const MAX_PAGES = 5
+    // Known Kalshi series with real liquid markets, grouped by category
+    const SERIES_BY_CATEGORY: Record<string, string[]> = {
+      'Economics/Finance': [
+        'KXFED', 'KXCPI', 'KXJOBS', 'INXD', 'NASDAQ', 'KXBTC', 'KXETH',
+        'KXTARIFF', 'KXGDP', 'KXREC', 'KXPCE', 'KXPPI',
+      ],
+      'Politics & Elections': [
+        'KXTRUMP', 'PRES', 'KXSENATE', 'KXHOUSE', 'KXGOV',
+      ],
+      'Sports': [
+        'KXNBA', 'KXNFL', 'KXMLB', 'KXNHL', 'KXSOCCER',
+      ],
+      'Other/General': [
+        'KXAI', 'KXTECH', 'KXWEATHER',
+      ],
+    }
+
+    const seriesToFetch = category && category !== 'All'
+      ? (SERIES_BY_CATEGORY[category] ?? [])
+      : Object.values(SERIES_BY_CATEGORY).flat()
+
+    // Step 1: Fetch markets from known series in parallel
     let rawMarkets: any[] = []
-    let cursor: string | null = null
 
-    for (let page = 0; page < MAX_PAGES; page++) {
-      const result = await fetchMarkets(settings.kalshi_api_key, {
-        status: 'open',
-        limit: PAGE_SIZE,
-        ...(cursor ? { cursor } : {}),
-        ...(category && category !== 'All' ? { category } : {}),
-      })
-
-      const nonMve = result.markets.filter(
-        (m: any) => !m.mve_selected_legs && !String(m.ticker ?? '').includes('KXMVE')
+    if (seriesToFetch.length > 0) {
+      const results = await Promise.all(
+        seriesToFetch.map((series) =>
+          fetchMarkets(settings.kalshi_api_key, {
+            series_ticker: series,
+            limit: 50,
+          }).catch(() => ({ markets: [], cursor: null }))
+        )
       )
-      rawMarkets.push(...nonMve)
-      cursor = result.cursor
+      rawMarkets = results.flatMap((r) => r.markets)
+    }
 
-      // Stop early if we have enough candidates or no more pages
-      if (rawMarkets.length >= limit * 4 || !cursor) break
+    // Fallback: if series queries returned nothing, page through generic endpoint
+    if (rawMarkets.length === 0) {
+      let cursor: string | null = null
+      for (let page = 0; page < 10; page++) {
+        const result = await fetchMarkets(settings.kalshi_api_key, {
+          limit: 100,
+          ...(cursor ? { cursor } : {}),
+        })
+        const nonMve = result.markets.filter(
+          (m: any) => !m.mve_selected_legs && !String(m.ticker ?? '').includes('KXMVE')
+        )
+        rawMarkets.push(...nonMve)
+        cursor = result.cursor
+        if (rawMarkets.length >= limit * 4 || !cursor) break
+      }
     }
 
     // Step 2: Normalize and filter

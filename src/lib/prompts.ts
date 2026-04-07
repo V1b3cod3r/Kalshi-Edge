@@ -1,4 +1,5 @@
 import { MacroView, SessionState, MarketInput } from './types'
+import { Signal, formatSignals } from './signals'
 
 export function buildAnalysisSystemPrompt(): string {
   return `You are **Kalshi Edge**, an expert prediction market trader specializing in finding and exploiting pricing inefficiencies on Kalshi. Your goal is to identify markets where the true probability of an outcome differs meaningfully from the implied probability in the current market price, then recommend trades sized by the Kelly Criterion to maximize long-run bankroll growth.
@@ -249,7 +250,8 @@ Rules:
 export function buildAnalysisUserMessage(
   market: MarketInput,
   views: MacroView[],
-  session: SessionState
+  session: SessionState,
+  signals: Signal[] = [],
 ): string {
   let msg = ''
 
@@ -320,13 +322,19 @@ export function buildAnalysisUserMessage(
     msg += `Correlation group: ${market.corr_group}\n`
   }
 
+  const signalBlock = formatSignals(signals)
+  if (signalBlock) {
+    msg += `\n${signalBlock}\n`
+  }
+
   return msg
 }
 
 export function buildScannerUserMessage(
   markets: MarketInput[],
   views: MacroView[],
-  session: SessionState
+  session: SessionState,
+  signalMap: Map<string, Signal[]> = new Map(),
 ): string {
   let msg = ''
 
@@ -384,6 +392,11 @@ export function buildScannerUserMessage(
     }
     if (m.category) {
       msg += `   Category: ${m.category}\n`
+    }
+    const signals = signalMap.get(m.id ?? '')
+    const signalBlock = formatSignals(signals ?? [])
+    if (signalBlock) {
+      msg += `   ${signalBlock.replace(/\n/g, '\n   ')}\n`
     }
     msg += '\n'
   })

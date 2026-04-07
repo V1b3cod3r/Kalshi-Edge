@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSession, saveSession } from '@/lib/storage'
 
+export const dynamic = 'force-dynamic'
+
 export async function GET() {
   try {
     const session = getSession()

@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { getSettings } from '@/lib/storage'
+import { getSignalsForMarket } from '@/lib/signals'
 
 const KALSHI_BASE_URL = 'https://api.elections.kalshi.com/trade-api/v2'
 
@@ -14,13 +15,21 @@ async function kalshiGet(apiKey: string, path: string, params?: Record<string, s
 }
 
 export async function GET(req: Request) {
+  const url = new URL(req.url)
+  const mode = url.searchParams.get('mode') ?? 'series'
+
+  // Signals test doesn't require Kalshi API key
+  if (mode === 'signals') {
+    const ticker = url.searchParams.get('ticker') ?? 'KXCPI-25APR-T3'
+    const series = url.searchParams.get('series') ?? ticker.split('-')[0]
+    const signals = await getSignalsForMarket(ticker, series)
+    return NextResponse.json({ ticker, series, signals, count: signals.length })
+  }
+
   const settings = getSettings()
   if (!settings.kalshi_api_key) {
     return NextResponse.json({ error: 'No API key' }, { status: 400 })
   }
-
-  const url = new URL(req.url)
-  const mode = url.searchParams.get('mode') ?? 'series'
 
   try {
     if (mode === 'auth') {

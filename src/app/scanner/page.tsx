@@ -95,7 +95,9 @@ export default function ScannerPage() {
 
       // Client-side filter to show accurate count before Claude runs
       const filtered = rawMarkets.filter((m: any) => {
-        const vol = Number(m.volume_24h ?? m.volume ?? 0)
+        // Skip MVE parlay bundles
+        if (m.mve_selected_legs || String(m.ticker ?? '').includes('KXMVE')) return false
+        const vol = Number(m.volume_24h_fp ?? m.volume_24h ?? m.volume_fp ?? m.volume ?? 0)
         return vol >= autoMinVolume
       })
 

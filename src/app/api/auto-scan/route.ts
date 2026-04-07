@@ -26,48 +26,58 @@ function mapCategory(kalshiCategory: string | undefined): string {
 
 // Normalize a Kalshi market object (whose shape can vary) into our MarketInput
 function normalizeMarket(m: any): MarketInput | null {
+  // Skip MVE parlay bundles — user-created multi-leg combos with no real liquidity
+  if (m.mve_selected_legs || (m.ticker && String(m.ticker).includes('KXMVE'))) return null
+
   // Title: try multiple field names
   const title = m.title || m.question || m.subtitle || m.event_title
   if (!title) return null
 
-  // YES price: Kalshi uses cents (1–99), convert to 0–1
-  let yesRaw: number | undefined
+  // YES price: Kalshi API returns *_dollars fields in decimal (0–1)
+  // Fall back to legacy cent-based fields for older API responses
+  let yes_price: number | undefined
 
-  const ya = Number(m.yes_ask ?? 0)
-  const yb = Number(m.yes_bid ?? 0)
-  const na = Number(m.no_ask ?? 0)
-  const nb = Number(m.no_bid ?? 0)
+  // Helper: parse a price value that may be a string or number
+  const p = (v: any): number => (v == null ? 0 : Number(v))
 
+  const ya = p(m.yes_ask_dollars ?? m.yes_ask)
+  const yb = p(m.yes_bid_dollars ?? m.yes_bid)
+  const na = p(m.no_ask_dollars ?? m.no_ask)
+  const nb = p(m.no_bid_dollars ?? m.no_bid)
+  const last = p(m.last_price_dollars ?? m.last_price)
+
+  // YES bid/ask midpoint
   if (ya > 0 && yb > 0) {
-    yesRaw = (ya + yb) / 2
+    yes_price = (ya + yb) / 2
   } else if (ya > 0) {
-    yesRaw = ya
+    yes_price = ya
   } else if (yb > 0) {
-    yesRaw = yb
+    yes_price = yb
   } else if (na > 0 && nb > 0) {
     // Derive YES from NO midpoint
-    yesRaw = 100 - (na + nb) / 2
+    yes_price = 1 - (na + nb) / 2
   } else if (na > 0) {
-    yesRaw = 100 - na
+    yes_price = 1 - na
   } else if (nb > 0) {
-    yesRaw = 100 - nb
-  } else {
-    // Fall back to last_price or yes_price
-    for (const candidate of [m.last_price, m.yes_price, m.previous_yes_ask, m.previous_yes_bid]) {
-      const n = Number(candidate ?? 0)
-      if (n > 0) { yesRaw = n; break }
-    }
+    yes_price = 1 - nb
+  } else if (last > 0) {
+    yes_price = last
   }
 
-  // No valid price found — drop the market rather than guess 50/50
-  if (!yesRaw) return null
+  // Legacy cent-based prices (1–99): convert to decimal
+  if (yes_price !== undefined && yes_price > 1) yes_price = yes_price / 100
 
-  // Kalshi prices are in cents (1–99), convert to decimal
-  const yes_price = yesRaw > 1 ? yesRaw / 100 : yesRaw
+  // No valid price found — drop the market
+  if (!yes_price) return null
+
   const no_price = 1 - yes_price
 
-  // Volume: try multiple field names
-  const volume_24h = m.volume_24h ?? m.volume ?? m.dollar_volume ?? 0
+  // Volume: Kalshi returns volume_24h_fp / volume_fp as decimal dollar strings
+  const volume_24h =
+    p(m.volume_24h_fp ?? m.volume_24h) ||
+    p(m.volume_fp ?? m.volume) ||
+    p(m.dollar_volume) ||
+    0
 
   // Resolution date
   const resolution_date = m.close_time || m.expiration_time || m.expected_expiration_ts || undefined

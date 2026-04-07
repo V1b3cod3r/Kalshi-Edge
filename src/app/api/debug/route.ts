@@ -23,6 +23,12 @@ export async function GET(req: Request) {
   const mode = url.searchParams.get('mode') ?? 'series'
 
   try {
+    if (mode === 'auth') {
+      // Test if the API key can access authenticated portfolio endpoints
+      const data = await kalshiGet(settings.kalshi_api_key, '/portfolio/balance')
+      return NextResponse.json({ ok: true, balance: data })
+    }
+
     if (mode === 'series') {
       const data = await kalshiGet(settings.kalshi_api_key, '/series', { limit: '20' })
       const tickers = (data.series ?? []).map((s: any) => `${s.ticker} | ${s.category} | ${s.title}`)

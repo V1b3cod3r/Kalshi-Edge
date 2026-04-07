@@ -243,9 +243,9 @@ Session context: [loaded / not provided]
 
 ### Ranked Opportunities
 
-| Rank | Market (abbreviated) | Dir | My Est. | Market | Edge | Score | Flags |
-|------|----------------------|-----|---------|--------|------|-------|-------|
-| 1    | [title, max 50 chars]| YES/NO | XX%  | XX%  | +X% | [score] | [flags] |
+| Rank | Market (abbreviated) | Ticker | Dir | My Est. | Market | Edge | Score | Flags |
+|------|----------------------|--------|-----|---------|--------|------|-------|-------|
+| 1    | [title, max 50 chars]| [ticker] | YES/NO | XX%  | XX%  | +X% | [score] | [flags] |
 
 ---
 
@@ -414,7 +414,7 @@ export function buildScannerUserMessage(
   msg += `Please scan the following ${markets.length} markets:\n\n`
 
   markets.forEach((m, i) => {
-    msg += `${i + 1}. ${m.title}\n`
+    msg += `${i + 1}. ${m.title}${m.id ? ` [${m.id}]` : ''}\n`
     msg += `   YES @ $${m.yes_price.toFixed(2)} / NO @ $${m.no_price.toFixed(2)}\n`
     if (m.resolution_criteria) {
       msg += `   Resolution: ${m.resolution_criteria}\n`

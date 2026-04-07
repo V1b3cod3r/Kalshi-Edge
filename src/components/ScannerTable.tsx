@@ -11,6 +11,7 @@ interface ScannerTableProps {
 interface ScanRow {
   rank: number
   title: string
+  ticker: string
   dir: string
   myEst: string
   market: string
@@ -40,13 +41,27 @@ function parseScannerTable(markdown: string): ScanRow[] {
   for (const line of dataLines) {
     const cells = line.split('|').map((c) => c.trim()).filter(Boolean)
     if (cells.length < 7) continue
-    const [rankStr, title, dir, myEst, market, edge, score, flagsRaw] = cells
+
+    // Support both 8-col (with Ticker) and 7-col (legacy without Ticker) formats
+    let rankStr: string, title: string, ticker: string, dir: string,
+        myEst: string, market: string, edge: string, score: string, flagsRaw: string | undefined
+
+    if (cells.length >= 9) {
+      // New format: Rank | Title | Ticker | Dir | MyEst | Market | Edge | Score | Flags
+      ;[rankStr, title, ticker, dir, myEst, market, edge, score, flagsRaw] = cells
+    } else {
+      // Legacy format: Rank | Title | Dir | MyEst | Market | Edge | Score | Flags
+      ;[rankStr, title, dir, myEst, market, edge, score, flagsRaw] = cells
+      ticker = ''
+    }
+
     const rank = parseInt(rankStr)
     if (isNaN(rank)) continue
-    const flags = (flagsRaw || '').match(/\[[\w]+\]/g) || []
+    const flags = (flagsRaw || '').match(/\[[\w-]+\]/g) || []
     rows.push({
       rank,
       title: title || '',
+      ticker: ticker || '',
       dir: dir || '',
       myEst: myEst || '',
       market: market || '',
@@ -58,14 +73,17 @@ function parseScannerTable(markdown: string): ScanRow[] {
   return rows
 }
 
-function matchMarket(rowTitle: string, markets: MarketInput[]): MarketInput | undefined {
+function findMarket(ticker: string, title: string, markets: MarketInput[]): MarketInput | undefined {
+  if (ticker) {
+    const exact = markets.find((m) => m.id === ticker)
+    if (exact) return exact
+  }
+  // Fallback: fuzzy title match
   const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9 ]/g, '').trim()
-  const rt = norm(rowTitle)
-  // Exact or contains match
+  const rt = norm(title)
   return (
     markets.find((m) => norm(m.title) === rt) ||
-    markets.find((m) => norm(m.title).includes(rt)) ||
-    markets.find((m) => rt.includes(norm(m.title).slice(0, 40)))
+    markets.find((m) => norm(m.title).startsWith(rt.slice(0, 30)))
   )
 }
 
@@ -117,12 +135,13 @@ function BetCell({
 }) {
   const [ts, setTs] = useState<RowTradeState>({ state: 'idle', contracts: 1 })
 
-  if (!market?.id || (row.dir !== 'YES' && row.dir !== 'NO')) {
+  const ticker = row.ticker || market?.id
+  if (!ticker || (row.dir !== 'YES' && row.dir !== 'NO')) {
     return <span style={{ color: '#475569', fontSize: '11px' }}>—</span>
   }
 
   const side = row.dir.toLowerCase() as 'yes' | 'no'
-  const priceDecimal = side === 'yes' ? market.yes_price : market.no_price
+  const priceDecimal = market ? (side === 'yes' ? market.yes_price : market.no_price) : 0.5
   const priceCents = Math.round(priceDecimal * 100)
   const cost = (ts.contracts * priceCents) / 100
 
@@ -133,12 +152,12 @@ function BetCell({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          ticker: market.id,
+          ticker,
           side,
           count: ts.contracts,
           price_cents: priceCents,
-          title: market.title,
-          category: market.category,
+          title: market?.title || row.title,
+          category: market?.category,
         }),
       })
       const data = await res.json()
@@ -190,7 +209,7 @@ function BetCell({
         }}
       >
         <div style={{ color: '#94a3b8', marginBottom: '6px' }}>
-          <span style={{ color: '#f1f5f9', fontWeight: 600 }}>{market.id}</span>
+          <span style={{ color: '#f1f5f9', fontWeight: 600 }}>{ticker}</span>
           {' · '}
           <span style={{ color: row.dir === 'YES' ? '#22c55e' : '#ef4444', fontWeight: 600 }}>{row.dir}</span>
           {' · '}
@@ -299,11 +318,11 @@ export default function ScannerTable({ markdown, markets = [] }: ScannerTablePro
             <table className="w-full text-sm">
               <thead>
                 <tr style={{ backgroundColor: '#0d0d17' }}>
-                  <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider" style={{ color: '#64748b' }}>Rank</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider" style={{ color: '#64748b' }}>#</th>
                   <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider" style={{ color: '#64748b' }}>Market</th>
                   <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider" style={{ color: '#64748b' }}>Dir</th>
                   <th className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider" style={{ color: '#64748b' }}>My Est.</th>
-                  <th className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider" style={{ color: '#64748b' }}>Market</th>
+                  <th className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider" style={{ color: '#64748b' }}>Mkt</th>
                   <th className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider" style={{ color: '#64748b' }}>Edge</th>
                   <th className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider" style={{ color: '#64748b' }}>Score</th>
                   <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider" style={{ color: '#64748b' }}>Flags</th>
@@ -312,7 +331,7 @@ export default function ScannerTable({ markdown, markets = [] }: ScannerTablePro
               </thead>
               <tbody>
                 {rows.map((row, i) => {
-                  const matched = matchMarket(row.title, markets)
+                  const matched = findMarket(row.ticker, row.title, markets)
                   return (
                     <tr
                       key={i}
@@ -327,9 +346,9 @@ export default function ScannerTable({ markdown, markets = [] }: ScannerTablePro
                         >
                           {row.title}
                         </span>
-                        {matched?.id && (
+                        {(row.ticker || matched?.id) && (
                           <span style={{ color: '#475569', fontSize: '10px', fontFamily: 'monospace' }}>
-                            {matched.id}
+                            {row.ticker || matched?.id}
                           </span>
                         )}
                       </td>

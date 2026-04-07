@@ -60,7 +60,7 @@ export default function ScannerPage() {
   // Auto-scan state
   const [autoCategory, setAutoCategory] = useState('All')
   const [autoLimit, setAutoLimit] = useState(15)
-  const [autoMinVolume, setAutoMinVolume] = useState(0)
+  const [autoMinVolume, setAutoMinVolume] = useState(500)
   const [scanPhase, setScanPhase] = useState<ScanPhase>('idle')
   const [marketsFound, setMarketsFound] = useState(0)
 
@@ -95,9 +95,8 @@ export default function ScannerPage() {
 
       // Client-side filter to show accurate count before Claude runs
       const filtered = rawMarkets.filter((m: any) => {
-        // Only filter on volume — let the server handle price normalization
         const vol = Number(m.volume_24h ?? m.volume ?? 0)
-        return vol >= autoMinVolume
+        return vol > 0 && vol >= autoMinVolume
       })
 
       const toScan = filtered.slice(0, autoLimit)

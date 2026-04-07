@@ -44,8 +44,8 @@ function normalizeMarket(m: any): MarketInput | null {
     }
   }
 
-  // If still no price found, default to 50/50 so market isn't dropped entirely
-  if (!yesRaw) yesRaw = 50
+  // No valid price found — drop the market rather than guess 50/50
+  if (!yesRaw) return null
 
   // Kalshi prices are in cents (1–99), convert to decimal
   const yes_price = yesRaw > 1 ? yesRaw / 100 : yesRaw
@@ -122,7 +122,9 @@ export async function POST(req: NextRequest) {
       .filter((m): m is MarketInput => m !== null)
       // Remove near-certain markets (no edge at extremes)
       .filter((m) => m.yes_price >= 0.03 && m.yes_price <= 0.97)
-      // Apply min volume filter
+      // Drop zero-volume markets entirely — they're illiquid/placeholder and untradeable
+      .filter((m) => (m.volume_24h ?? 0) > 0)
+      // Apply caller's min volume filter on top
       .filter((m) => (m.volume_24h ?? 0) >= min_volume)
       // Sort by volume descending (most liquid = most tradeable)
       .sort((a, b) => (b.volume_24h ?? 0) - (a.volume_24h ?? 0))

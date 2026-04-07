@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { ToastNotification } from '@/components/SessionPanel'
 
 interface Toast {
@@ -313,7 +313,15 @@ export default function ScannerPage() {
   const [screenedOut, setScreenedOut] = useState<ScreenedOut[]>([])
   const [sessionNotes, setSessionNotes] = useState('')
   const [showScreenedOut, setShowScreenedOut] = useState(false)
+  const [bankroll, setBankroll] = useState(10000)
   const [toast, setToast] = useState<Toast | null>(null)
+
+  useEffect(() => {
+    fetch('/api/session')
+      .then((r) => r.json())
+      .then((d) => { if (d.session?.current_bankroll) setBankroll(d.session.current_bankroll) })
+      .catch(() => {})
+  }, [])
 
   const isScanning = scanPhase === 'fetching' || scanPhase === 'scanning'
 
@@ -509,7 +517,7 @@ export default function ScannerPage() {
             </div>
           ) : (
             opportunities.map((opp) => (
-              <OpportunityCard key={opp.ticker} opp={opp} bankroll={10000} />
+              <OpportunityCard key={opp.ticker} opp={opp} bankroll={bankroll} />
             ))
           )}
 

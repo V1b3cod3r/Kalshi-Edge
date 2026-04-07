@@ -115,7 +115,9 @@ export function saveSession(session: SessionState): void {
 
 // Settings
 export function getSettings(): AppSettings {
-  return readJson<AppSettings>(SETTINGS_FILE, DEFAULT_SETTINGS)
+  const saved = readJson<Partial<AppSettings>>(SETTINGS_FILE, {})
+  // Merge with defaults so missing fields never produce NaN/undefined
+  return { ...DEFAULT_SETTINGS, ...saved }
 }
 
 export function saveSettings(settings: AppSettings): void {

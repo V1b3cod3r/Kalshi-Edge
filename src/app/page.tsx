@@ -47,6 +47,7 @@ export default function DashboardPage() {
   const [views, setViews] = useState<MacroView[]>([])
   const [settings, setSettings] = useState<Partial<AppSettings>>({})
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState(false)
 
   useEffect(() => {
     Promise.all([
@@ -59,7 +60,7 @@ export default function DashboardPage() {
         if (viewsData.views) setViews(viewsData.views)
         if (settingsData.settings) setSettings(settingsData.settings)
       })
-      .catch(() => {})
+      .catch(() => setLoadError(true))
       .finally(() => setLoading(false))
   }, [])
 
@@ -94,6 +95,25 @@ export default function DashboardPage() {
           })}
         </p>
       </div>
+
+      {/* Load error */}
+      {loadError && (
+        <div
+          className="mb-6 p-4 rounded-xl border flex items-center justify-between"
+          style={{ backgroundColor: '#1f0d0d', borderColor: '#ef444430' }}
+        >
+          <span className="text-sm" style={{ color: '#ef4444' }}>
+            Failed to load dashboard data. Check that the server is running.
+          </span>
+          <button
+            onClick={() => window.location.reload()}
+            className="text-sm px-3 py-1.5 rounded-lg"
+            style={{ backgroundColor: '#2d1010', color: '#ef4444' }}
+          >
+            Retry
+          </button>
+        </div>
+      )}
 
       {/* API Key Warning */}
       {!loading && !settings.anthropic_api_key && (

@@ -42,7 +42,7 @@ export async function POST(req: NextRequest) {
       price_cents,
     })
 
-    // Record position in session
+    // Record position and deduct cost from bankroll
     const newPosition = {
       id: result.order_id,
       market: ticker,
@@ -54,6 +54,7 @@ export async function POST(req: NextRequest) {
       corr_group: body.corr_group || ticker.split('-')[0],
     }
     session.positions.push(newPosition)
+    session.current_bankroll = Math.max(0, session.current_bankroll - totalCost)
     saveSession(session)
 
     return NextResponse.json({

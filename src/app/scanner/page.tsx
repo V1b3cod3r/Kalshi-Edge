@@ -84,10 +84,19 @@ export default function ScannerPage() {
     try {
       // Phase 1: fetch from known series tickers (avoids the MVE parlay flood)
       const SERIES_BY_CATEGORY: Record<string, string[]> = {
-        'Economics/Finance': ['KXFED','KXCPI','KXJOBS','INXD','NASDAQ','KXBTC','KXETH','KXTARIFF','KXGDP','KXREC'],
-        'Politics & Elections': ['KXTRUMP','PRES','KXSENATE','KXHOUSE','KXGOV'],
-        'Sports': ['KXNBA','KXNFL','KXMLB','KXNHL','KXSOCCER'],
-        'Other/General': ['KXAI','KXTECH','KXWEATHER'],
+        'Economics/Finance': [
+          'KXCPI', 'KXGDP', 'GDP', 'KXPCECORE', 'KXRATECUT', 'KXRATECUTCOUNT',
+          'KXJOBLESS', 'KXFRM', 'KXECB', 'KXBOE', 'OILW', 'KXNATGASMON',
+          'KXISMSERVICES', 'KXUSRETAIL', 'KXFEDDECISION', 'KXFEDRATEMIN',
+          'NASDAQ100', 'INXU', 'INXW', 'INXD', 'KXBTC', 'KXETH', 'KXSOL', 'KXSOLE',
+        ],
+        'Politics & Elections': [
+          'PRES', 'KXNEWTARIFFS', 'KXTARIFFSPRC', 'KXTARIFFCAN', 'KXTARIFFSEU',
+          'KXDCEIL', 'KXGOVTSHUTDOWN', 'KXTRUMPCHINA', 'KXSHUTLENGTH',
+          'KXRECNCH', 'KXRECSS', 'BBB',
+        ],
+        'Sports': ['KXNBA', 'KXNFL', 'KXMLB', 'KXNHL'],
+        'Other/General': ['KXAI', 'KXTECH'],
       }
       const series = autoCategory !== 'All'
         ? (SERIES_BY_CATEGORY[autoCategory] ?? [])

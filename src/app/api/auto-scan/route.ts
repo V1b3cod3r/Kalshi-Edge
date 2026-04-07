@@ -136,17 +136,21 @@ export async function POST(req: NextRequest) {
     // Known Kalshi series with real liquid markets, grouped by category
     const SERIES_BY_CATEGORY: Record<string, string[]> = {
       'Economics/Finance': [
-        'KXFED', 'KXCPI', 'KXJOBS', 'INXD', 'NASDAQ', 'KXBTC', 'KXETH',
-        'KXTARIFF', 'KXGDP', 'KXREC', 'KXPCE', 'KXPPI',
+        'KXCPI', 'KXGDP', 'GDP', 'KXPCECORE', 'KXRATECUT', 'KXRATECUTCOUNT',
+        'KXJOBLESS', 'KXFRM', 'KXECB', 'KXBOE', 'OILW', 'KXNATGASMON',
+        'KXISMSERVICES', 'KXUSRETAIL', 'KXFEDDECISION', 'KXFEDRATEMIN',
+        'NASDAQ100', 'INXU', 'INXW', 'INXD', 'KXBTC', 'KXETH', 'KXSOL', 'KXSOLE',
       ],
       'Politics & Elections': [
-        'KXTRUMP', 'PRES', 'KXSENATE', 'KXHOUSE', 'KXGOV',
+        'PRES', 'KXNEWTARIFFS', 'KXTARIFFSPRC', 'KXTARIFFCAN', 'KXTARIFFSEU',
+        'KXDCEIL', 'KXGOVTSHUTDOWN', 'KXTRUMPCHINA', 'KXSHUTLENGTH',
+        'KXRECNCH', 'KXRECSS', 'BBB',
       ],
       'Sports': [
-        'KXNBA', 'KXNFL', 'KXMLB', 'KXNHL', 'KXSOCCER',
+        'KXNBA', 'KXNFL', 'KXMLB', 'KXNHL',
       ],
       'Other/General': [
-        'KXAI', 'KXTECH', 'KXWEATHER',
+        'KXAI', 'KXTECH',
       ],
     }
 

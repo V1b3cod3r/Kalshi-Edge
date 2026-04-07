@@ -2,7 +2,6 @@ import { test, expect } from '@playwright/test'
 
 test.describe('Views Page', () => {
   test.beforeEach(async ({ page }) => {
-    // Mock GET /api/views to return empty initially
     await page.route('**/api/views', async (route) => {
       if (route.request().method() === 'GET') {
         await route.fulfill({
@@ -18,21 +17,22 @@ test.describe('Views Page', () => {
   })
 
   test('loads the views page with heading', async ({ page }) => {
-    await expect(page.getByRole('heading', { name: /macro views/i })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Macro Views' })).toBeVisible()
   })
 
   test('shows empty state when no views exist', async ({ page }) => {
-    // No views loaded; should see add/create button or empty message
-    const addButton = page.getByRole('button', { name: /add view|new view|create/i })
-    await expect(addButton).toBeVisible()
+    // Empty state: "No macro views yet" + Add Your First View button
+    await expect(page.getByText('No macro views yet')).toBeVisible()
   })
 
   test('opens add view form', async ({ page }) => {
-    const addButton = page.getByRole('button', { name: /add view|new view|create/i })
-    await addButton.click()
+    // Click "Add Your First View" or the "Add View" button in header
+    const addButton = page.getByRole('button', { name: /Add View|Add Your First View/i })
+    await addButton.first().click()
 
-    // Form fields should appear
-    await expect(page.getByLabel(/thesis/i)).toBeVisible()
+    // Modal opens — "New Macro View" heading and Thesis textarea visible
+    await expect(page.getByText('New Macro View')).toBeVisible()
+    await expect(page.getByPlaceholder('Describe your macro view thesis...')).toBeVisible()
   })
 
   test('can create a new view', async ({ page }) => {
@@ -40,7 +40,7 @@ test.describe('Views Page', () => {
       id: 'view-test-001',
       thesis: 'Fed will cut rates in Q4',
       direction: 'DOVISH',
-      conviction: 'HIGH',
+      conviction: 'HIGH' as const,
       timeframe: 'through 2025-12-31',
       affects_category: 'Economics/Finance',
       affects_keywords: ['fed', 'rate'],
@@ -50,7 +50,6 @@ test.describe('Views Page', () => {
       updated_at: new Date().toISOString(),
     }
 
-    // Mock POST to create the view
     await page.route('**/api/views', async (route) => {
       if (route.request().method() === 'POST') {
         await route.fulfill({
@@ -69,17 +68,23 @@ test.describe('Views Page', () => {
       }
     })
 
-    const addButton = page.getByRole('button', { name: /add view|new view|create/i })
-    await addButton.click()
+    // Open modal
+    const addButton = page.getByRole('button', { name: /Add View|Add Your First View/i })
+    await addButton.first().click()
 
-    // Fill in the thesis field
-    await page.getByLabel(/thesis/i).fill('Fed will cut rates in Q4')
+    // Fill in thesis
+    await page.getByPlaceholder('Describe your macro view thesis...').fill('Fed will cut rates in Q4')
 
-    // Submit
-    const submitButton = page.getByRole('button', { name: /save|submit|create/i })
-    await submitButton.click()
+    // Fill in required direction field
+    await page.getByPlaceholder(/hawkish-on-fed|bullish/i).fill('DOVISH')
 
-    // View should appear in the list
+    // Set a date for "Valid Through"
+    await page.locator('input[type="date"]').first().fill('2025-12-31')
+
+    // Submit with "Save View" button
+    await page.getByRole('button', { name: 'Save View' }).click()
+
+    // View thesis should appear in the list
     await expect(page.getByText('Fed will cut rates in Q4')).toBeVisible({ timeout: 5000 })
   })
 })

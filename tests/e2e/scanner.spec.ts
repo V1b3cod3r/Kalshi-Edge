@@ -20,17 +20,23 @@ Active views applied: none
 - Quick estimate: 65% vs. market's 45% = ~20% edge
 `
 
+const mockKalshiMarkets = [
+  { ticker: 'FED-DEC', title: 'Will the Fed cut rates?', yes_ask: 45, yes_bid: 43, volume_24h: 5000 },
+  { ticker: 'INFL', title: 'Will inflation fall below 3%?', yes_ask: 60, yes_bid: 58, volume_24h: 800 },
+  { ticker: 'NFL-KC', title: 'Will Chiefs win Super Bowl?', yes_ask: 30, yes_bid: 28, volume_24h: 12000 },
+]
+
 test.describe('Scanner Page - Auto-Scan UI', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto('/scanner')
   })
 
   test('loads the scanner page', async ({ page }) => {
-    await expect(page).toHaveTitle(/Kalshi Edge|Scanner/i)
+    await expect(page.getByRole('heading', { name: 'Market Scanner' })).toBeVisible()
   })
 
   test('shows Auto-Scan Live Markets heading', async ({ page }) => {
-    await expect(page.getByText(/Auto-Scan Live Markets/i)).toBeVisible()
+    await expect(page.getByText('Auto-Scan Live Markets')).toBeVisible()
   })
 
   test('shows category filter dropdown', async ({ page }) => {
@@ -39,52 +45,54 @@ test.describe('Scanner Page - Auto-Scan UI', () => {
   })
 
   test('shows Scan Kalshi Now button', async ({ page }) => {
-    await expect(page.getByRole('button', { name: /Scan Kalshi Now/i })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Scan Kalshi Now' })).toBeVisible()
   })
 
-  test('shows market count slider or input', async ({ page }) => {
-    // Slider or number input for market count
-    const slider = page.locator('input[type="range"]')
+  test('shows market count slider', async ({ page }) => {
+    const slider = page.locator('input[type="range"]').first()
     await expect(slider).toBeVisible()
   })
 
-  test('manual entry section is present (collapsed or at bottom)', async ({ page }) => {
-    // Manual entry should be demoted — look for its trigger or section
-    const manualSection = page.getByText(/manual|paste|enter markets/i)
-    await expect(manualSection).toBeVisible()
+  test('manual entry section is present (collapsed by default)', async ({ page }) => {
+    // The collapsible button contains "Manual Entry" text
+    await expect(page.getByRole('button', { name: /manual entry/i })).toBeVisible()
   })
 
   test('performs auto-scan with loading states and shows results', async ({ page }) => {
-    // Mock the auto-scan endpoint
+    // Phase 1: mock the Kalshi markets fetch
+    await page.route('**/api/kalshi/markets**', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ markets: mockKalshiMarkets, cursor: null }),
+      })
+    })
+
+    // Phase 2: mock the auto-scan endpoint
     await page.route('**/api/auto-scan', async (route) => {
-      // Add a small delay to allow loading state to be visible
-      await new Promise((r) => setTimeout(r, 100))
+      await new Promise((r) => setTimeout(r, 150))
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify({
           result: mockScanResult,
           markets_scanned: 3,
-          markets: [
-            { title: 'Will the Fed cut rates?', yes_price: 0.45, no_price: 0.55, volume_24h: 5000 },
-            { title: 'Will inflation fall below 3%?', yes_price: 0.6, no_price: 0.4, volume_24h: 800 },
-            { title: 'Will Chiefs win Super Bowl?', yes_price: 0.3, no_price: 0.7, volume_24h: 12000 },
-          ],
+          markets: mockKalshiMarkets,
         }),
       })
     })
 
-    await page.getByRole('button', { name: /Scan Kalshi Now/i }).click()
+    await page.getByRole('button', { name: 'Scan Kalshi Now' }).click()
 
-    // Should show some loading indicator
-    await expect(page.getByText(/fetching|loading|scanning/i)).toBeVisible({ timeout: 5000 })
+    // Phase 1 loading: button text changes to "Fetching markets..."
+    await expect(page.getByRole('button', { name: /Fetching markets\.\.\./i })).toBeVisible({ timeout: 5000 })
 
-    // Should eventually show results
-    await expect(page.getByText(/Fed cut rates|Market Scan Results|Ranked/i)).toBeVisible({ timeout: 15000 })
+    // Results eventually appear
+    await expect(page.getByText(/Will the Fed cut rates|Market Scan Results|Ranked/i)).toBeVisible({ timeout: 30000 })
   })
 
   test('shows error message on scan failure', async ({ page }) => {
-    await page.route('**/api/auto-scan', async (route) => {
+    await page.route('**/api/kalshi/markets**', async (route) => {
       await route.fulfill({
         status: 400,
         contentType: 'application/json',
@@ -92,30 +100,29 @@ test.describe('Scanner Page - Auto-Scan UI', () => {
       })
     })
 
-    await page.getByRole('button', { name: /Scan Kalshi Now/i }).click()
+    await page.getByRole('button', { name: 'Scan Kalshi Now' }).click()
 
     await expect(page.getByText(/API key|Settings|error/i)).toBeVisible({ timeout: 10000 })
   })
 
   test('category dropdown has expected options', async ({ page }) => {
     const categorySelect = page.getByRole('combobox').first()
-    await categorySelect.click()
-
-    // Should have "All" option and category-specific options
-    const options = page.getByRole('option')
-    const count = await options.count()
-    expect(count).toBeGreaterThanOrEqual(2)
+    // Check it contains the expected options
+    await expect(categorySelect.locator('option', { hasText: 'All' })).toBeAttached()
+    await expect(categorySelect.locator('option', { hasText: 'Economics/Finance' })).toBeAttached()
+    await expect(categorySelect.locator('option', { hasText: 'Sports' })).toBeAttached()
   })
 
   test('slider changes the displayed market count', async ({ page }) => {
     const slider = page.locator('input[type="range"]').first()
-    const initialValue = await slider.inputValue()
 
-    // Move slider to max
+    // Default is 15 — label shows "Markets to scan: 15"
+    await expect(page.locator('label').filter({ hasText: 'Markets to scan:' })).toContainText('15')
+
+    // Move to 25
     await slider.fill('25')
 
-    // Label should update
-    await expect(page.getByText(/25/)).toBeVisible()
-    expect(await slider.inputValue()).toBe('25')
+    // Label should now show 25
+    await expect(page.locator('label').filter({ hasText: 'Markets to scan:' })).toContainText('25')
   })
 })

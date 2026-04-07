@@ -6,16 +6,18 @@ test.describe('Analyze Page', () => {
   })
 
   test('loads the analyze page', async ({ page }) => {
-    await expect(page.getByRole('heading', { name: /analyze/i })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Market Analyzer' })).toBeVisible()
   })
 
   test('shows market input form fields', async ({ page }) => {
-    await expect(page.getByLabel(/market title/i)).toBeVisible()
-    await expect(page.getByLabel(/yes price/i)).toBeVisible()
+    // Labels don't have htmlFor — use placeholder text
+    await expect(page.getByPlaceholder(/Will the Fed cut rates/i)).toBeVisible()
+    // YES Price field — two inputs with placeholder "0.00", first is YES
+    await expect(page.locator('input[placeholder="0.00"]').first()).toBeVisible()
   })
 
   test('shows analyze button', async ({ page }) => {
-    await expect(page.getByRole('button', { name: /analyze/i })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Analyze Market' })).toBeVisible()
   })
 
   test('submits market and displays analysis result', async ({ page }) => {
@@ -32,7 +34,6 @@ test.describe('Analyze Page', () => {
 - **Direction**: YES
 - **Recommended size**: 2% of bankroll`
 
-    // Mock the analyze API
     await page.route('**/api/analyze', async (route) => {
       await route.fulfill({
         status: 200,
@@ -41,18 +42,20 @@ test.describe('Analyze Page', () => {
       })
     })
 
-    // Fill in the form
-    await page.getByLabel(/market title/i).fill('Will the Fed cut rates in December?')
-    await page.getByLabel(/yes price/i).fill('0.45')
+    // Fill in market title
+    await page.getByPlaceholder(/Will the Fed cut rates/i).fill('Will the Fed cut rates in December?')
 
-    // Submit
-    await page.getByRole('button', { name: /analyze/i }).click()
+    // Fill in YES price (first 0.00 input)
+    await page.locator('input[placeholder="0.00"]').first().fill('0.45')
 
-    // Should show loading state
-    await expect(page.getByText(/analyzing|loading/i)).toBeVisible({ timeout: 3000 })
+    // Click analyze
+    await page.getByRole('button', { name: 'Analyze Market' }).click()
 
-    // Should show results
-    await expect(page.getByText(/Trade Recommendation|Edge|YES/i)).toBeVisible({ timeout: 15000 })
+    // Button becomes "Analyzing..." during load
+    await expect(page.getByRole('button', { name: 'Analyzing...' })).toBeVisible({ timeout: 3000 })
+
+    // Results appear
+    await expect(page.getByText(/Trade Recommendation/i)).toBeVisible({ timeout: 15000 })
   })
 
   test('shows error when API key is not configured', async ({ page }) => {
@@ -64,10 +67,11 @@ test.describe('Analyze Page', () => {
       })
     })
 
-    await page.getByLabel(/market title/i).fill('Test market')
-    await page.getByLabel(/yes price/i).fill('0.5')
-    await page.getByRole('button', { name: /analyze/i }).click()
+    await page.getByPlaceholder(/Will the Fed cut rates/i).fill('Test market')
+    await page.locator('input[placeholder="0.00"]').first().fill('0.5')
+    await page.getByRole('button', { name: 'Analyze Market' }).click()
 
+    // Toast or error shows the message
     await expect(page.getByText(/API key|Settings/i)).toBeVisible({ timeout: 10000 })
   })
 })

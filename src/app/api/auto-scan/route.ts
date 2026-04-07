@@ -217,12 +217,46 @@ export async function POST(req: NextRequest) {
     const systemPrompt = buildScannerSystemPrompt()
     const userMessage = buildScannerUserMessage(normalized, views, session)
 
-    const result = await callClaude(settings.anthropic_api_key, systemPrompt, userMessage)
+    const rawResult = await callClaude(settings.anthropic_api_key, systemPrompt, userMessage)
+
+    // Parse Claude's JSON response
+    let scanResult: { opportunities: any[]; screened_out: any[]; session_notes: string } = {
+      opportunities: [],
+      screened_out: [],
+      session_notes: '',
+    }
+    try {
+      // Strip any accidental markdown fences Claude might add
+      const cleaned = rawResult.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim()
+      scanResult = JSON.parse(cleaned)
+    } catch {
+      // If JSON parsing fails, return error so user knows to retry
+      return NextResponse.json(
+        { error: 'Claude returned an unexpected format. Please try again.' },
+        { status: 500 }
+      )
+    }
+
+    // Build a ticker → market map for price lookup
+    const marketByTicker = new Map(normalized.map((m) => [m.id, m]))
+
+    // Attach live prices to each opportunity
+    const opportunities = (scanResult.opportunities || []).map((opp: any) => {
+      const market = marketByTicker.get(opp.ticker)
+      return {
+        ...opp,
+        yes_price: market?.yes_price ?? null,
+        no_price: market?.no_price ?? null,
+        volume_24h: market?.volume_24h ?? null,
+        resolution_date: market?.resolution_date ?? null,
+      }
+    })
 
     return NextResponse.json({
-      result,
+      opportunities,
+      screened_out: scanResult.screened_out || [],
+      session_notes: scanResult.session_notes || '',
       markets_scanned: normalized.length,
-      markets: normalized,
     })
   } catch (error: any) {
     console.error('Auto-scan error:', error)

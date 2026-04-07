@@ -25,7 +25,12 @@ export async function GET(req: Request) {
   try {
     if (mode === 'series') {
       const data = await kalshiGet(settings.kalshi_api_key, '/series', { limit: '100' })
-      return NextResponse.json(data)
+      const tickers = (data.series ?? []).map((s: any) => ({
+        ticker: s.ticker,
+        title: s.title,
+        category: s.category,
+      }))
+      return NextResponse.json({ count: tickers.length, series: tickers })
     }
 
     if (mode === 'events') {

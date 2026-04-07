@@ -1,9 +1,11 @@
 'use client'
 
 import { useState } from 'react'
+import { MarketInput } from '@/lib/types'
 
 interface ScannerTableProps {
   markdown: string
+  markets?: MarketInput[]
 }
 
 interface ScanRow {
@@ -17,13 +19,22 @@ interface ScanRow {
   flags: string[]
 }
 
+type TradeState = 'idle' | 'confirm' | 'loading' | 'success' | 'error'
+
+interface RowTradeState {
+  state: TradeState
+  contracts: number
+  error?: string
+  orderId?: string
+  totalCost?: number
+}
+
 function parseScannerTable(markdown: string): ScanRow[] {
   const rows: ScanRow[] = []
   const tableMatch = markdown.match(/\|[\s\S]*?\|[\s\S]*?(?=\n\n|\n---|\n###|$)/m)
   if (!tableMatch) return rows
 
   const lines = tableMatch[0].split('\n').filter((l) => l.trim().startsWith('|'))
-  // Skip header and separator
   const dataLines = lines.filter((l) => !l.includes('---') && !l.toLowerCase().includes('rank'))
 
   for (const line of dataLines) {
@@ -45,6 +56,17 @@ function parseScannerTable(markdown: string): ScanRow[] {
     })
   }
   return rows
+}
+
+function matchMarket(rowTitle: string, markets: MarketInput[]): MarketInput | undefined {
+  const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9 ]/g, '').trim()
+  const rt = norm(rowTitle)
+  // Exact or contains match
+  return (
+    markets.find((m) => norm(m.title) === rt) ||
+    markets.find((m) => norm(m.title).includes(rt)) ||
+    markets.find((m) => rt.includes(norm(m.title).slice(0, 40)))
+  )
 }
 
 function FlagBadge({ flag }: { flag: string }) {
@@ -86,7 +108,177 @@ function MarkdownSection({ content }: { content: string }) {
   )
 }
 
-export default function ScannerTable({ markdown }: ScannerTableProps) {
+function BetCell({
+  row,
+  market,
+}: {
+  row: ScanRow
+  market: MarketInput | undefined
+}) {
+  const [ts, setTs] = useState<RowTradeState>({ state: 'idle', contracts: 1 })
+
+  if (!market?.id || (row.dir !== 'YES' && row.dir !== 'NO')) {
+    return <span style={{ color: '#475569', fontSize: '11px' }}>—</span>
+  }
+
+  const side = row.dir.toLowerCase() as 'yes' | 'no'
+  const priceDecimal = side === 'yes' ? market.yes_price : market.no_price
+  const priceCents = Math.round(priceDecimal * 100)
+  const cost = (ts.contracts * priceCents) / 100
+
+  const placeTrade = async () => {
+    setTs((p) => ({ ...p, state: 'loading' }))
+    try {
+      const res = await fetch('/api/trade', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ticker: market.id,
+          side,
+          count: ts.contracts,
+          price_cents: priceCents,
+          title: market.title,
+          category: market.category,
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Trade failed')
+      setTs({ state: 'success', contracts: ts.contracts, orderId: data.order?.order_id, totalCost: data.total_cost })
+    } catch (err: any) {
+      setTs((p) => ({ ...p, state: 'error', error: err.message }))
+    }
+  }
+
+  if (ts.state === 'success') {
+    return (
+      <div style={{ fontSize: '11px', color: '#22c55e' }}>
+        ✓ ${ts.totalCost?.toFixed(2)}
+        <button
+          onClick={() => setTs({ state: 'idle', contracts: 1 })}
+          style={{ color: '#475569', marginLeft: '6px', fontSize: '10px' }}
+        >
+          reset
+        </button>
+      </div>
+    )
+  }
+
+  if (ts.state === 'error') {
+    return (
+      <div style={{ fontSize: '11px', color: '#ef4444', maxWidth: '120px' }}>
+        {ts.error?.slice(0, 60)}
+        <button
+          onClick={() => setTs({ state: 'idle', contracts: 1 })}
+          style={{ color: '#475569', marginLeft: '6px', fontSize: '10px', display: 'block' }}
+        >
+          retry
+        </button>
+      </div>
+    )
+  }
+
+  if (ts.state === 'confirm') {
+    return (
+      <div
+        style={{
+          backgroundColor: '#0a1a0d',
+          border: '1px solid #22c55e40',
+          borderRadius: '8px',
+          padding: '8px',
+          minWidth: '160px',
+          fontSize: '12px',
+        }}
+      >
+        <div style={{ color: '#94a3b8', marginBottom: '6px' }}>
+          <span style={{ color: '#f1f5f9', fontWeight: 600 }}>{market.id}</span>
+          {' · '}
+          <span style={{ color: row.dir === 'YES' ? '#22c55e' : '#ef4444', fontWeight: 600 }}>{row.dir}</span>
+          {' · '}
+          <span style={{ color: '#f1f5f9' }}>{priceCents}¢</span>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '8px' }}>
+          <label style={{ color: '#64748b', fontSize: '11px' }}>Qty</label>
+          <input
+            type="number"
+            min={1}
+            max={99}
+            value={ts.contracts}
+            onChange={(e) => setTs((p) => ({ ...p, contracts: Math.max(1, parseInt(e.target.value) || 1) }))}
+            style={{
+              width: '48px',
+              backgroundColor: '#0d0d17',
+              border: '1px solid #2a2a3e',
+              borderRadius: '4px',
+              color: '#f1f5f9',
+              padding: '2px 6px',
+              fontSize: '12px',
+              outline: 'none',
+            }}
+          />
+          <span style={{ color: '#22c55e', fontWeight: 600 }}>${cost.toFixed(2)}</span>
+        </div>
+        <div style={{ display: 'flex', gap: '6px' }}>
+          <button
+            onClick={placeTrade}
+            style={{
+              backgroundColor: '#16a34a',
+              color: '#fff',
+              border: 'none',
+              borderRadius: '6px',
+              padding: '4px 10px',
+              fontSize: '11px',
+              fontWeight: 600,
+              cursor: 'pointer',
+              flex: 1,
+            }}
+          >
+            Confirm
+          </button>
+          <button
+            onClick={() => setTs({ state: 'idle', contracts: 1 })}
+            style={{
+              backgroundColor: '#1e1e2e',
+              color: '#94a3b8',
+              border: 'none',
+              borderRadius: '6px',
+              padding: '4px 8px',
+              fontSize: '11px',
+              cursor: 'pointer',
+            }}
+          >
+            ✕
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  if (ts.state === 'loading') {
+    return <span style={{ color: '#94a3b8', fontSize: '11px' }}>Placing...</span>
+  }
+
+  // idle
+  return (
+    <button
+      onClick={() => setTs((p) => ({ ...p, state: 'confirm' }))}
+      style={{
+        backgroundColor: row.dir === 'YES' ? '#22c55e20' : '#ef444420',
+        color: row.dir === 'YES' ? '#22c55e' : '#ef4444',
+        border: `1px solid ${row.dir === 'YES' ? '#22c55e40' : '#ef444440'}`,
+        borderRadius: '6px',
+        padding: '4px 10px',
+        fontSize: '11px',
+        fontWeight: 600,
+        cursor: 'pointer',
+        whiteSpace: 'nowrap',
+      }}
+    >
+      Bet {row.dir}
+    </button>
+  )
+}
+
+export default function ScannerTable({ markdown, markets = [] }: ScannerTableProps) {
   const [showFull, setShowFull] = useState(false)
   const rows = parseScannerTable(markdown)
 
@@ -115,54 +307,66 @@ export default function ScannerTable({ markdown }: ScannerTableProps) {
                   <th className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider" style={{ color: '#64748b' }}>Edge</th>
                   <th className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider" style={{ color: '#64748b' }}>Score</th>
                   <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider" style={{ color: '#64748b' }}>Flags</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider" style={{ color: '#64748b' }}>Trade</th>
                 </tr>
               </thead>
               <tbody>
-                {rows.map((row, i) => (
-                  <tr
-                    key={i}
-                    style={{ borderBottom: '1px solid #1a1a28' }}
-                  >
-                    <td className="px-4 py-3" style={{ color: '#64748b' }}>#{row.rank}</td>
-                    <td className="px-4 py-3 max-w-[200px]">
-                      <span
-                        className="truncate block"
-                        style={{ color: '#f1f5f9' }}
-                        title={row.title}
-                      >
-                        {row.title}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3">
-                      <span
-                        className="text-xs font-bold"
-                        style={{ color: row.dir === 'YES' ? '#22c55e' : row.dir === 'NO' ? '#ef4444' : '#64748b' }}
-                      >
-                        {row.dir}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 text-right" style={{ color: '#a5b4fc' }}>{row.myEst}</td>
-                    <td className="px-4 py-3 text-right" style={{ color: '#64748b' }}>{row.market}</td>
-                    <td className="px-4 py-3 text-right">
-                      <span
-                        style={{
-                          color: row.edge.startsWith('+') ? '#22c55e' : '#ef4444',
-                          fontWeight: '600',
-                        }}
-                      >
-                        {row.edge}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 text-right" style={{ color: '#f1f5f9', fontWeight: '600' }}>{row.score}</td>
-                    <td className="px-4 py-3">
-                      <div className="flex gap-1 flex-wrap">
-                        {row.flags.map((f) => (
-                          <FlagBadge key={f} flag={f} />
-                        ))}
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                {rows.map((row, i) => {
+                  const matched = matchMarket(row.title, markets)
+                  return (
+                    <tr
+                      key={i}
+                      style={{ borderBottom: '1px solid #1a1a28' }}
+                    >
+                      <td className="px-4 py-3" style={{ color: '#64748b' }}>#{row.rank}</td>
+                      <td className="px-4 py-3 max-w-[200px]">
+                        <span
+                          className="truncate block"
+                          style={{ color: '#f1f5f9' }}
+                          title={matched?.title || row.title}
+                        >
+                          {row.title}
+                        </span>
+                        {matched?.id && (
+                          <span style={{ color: '#475569', fontSize: '10px', fontFamily: 'monospace' }}>
+                            {matched.id}
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3">
+                        <span
+                          className="text-xs font-bold"
+                          style={{ color: row.dir === 'YES' ? '#22c55e' : row.dir === 'NO' ? '#ef4444' : '#64748b' }}
+                        >
+                          {row.dir}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-right" style={{ color: '#a5b4fc' }}>{row.myEst}</td>
+                      <td className="px-4 py-3 text-right" style={{ color: '#64748b' }}>{row.market}</td>
+                      <td className="px-4 py-3 text-right">
+                        <span
+                          style={{
+                            color: row.edge.startsWith('+') ? '#22c55e' : '#ef4444',
+                            fontWeight: '600',
+                          }}
+                        >
+                          {row.edge}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-right" style={{ color: '#f1f5f9', fontWeight: '600' }}>{row.score}</td>
+                      <td className="px-4 py-3">
+                        <div className="flex gap-1 flex-wrap">
+                          {row.flags.map((f) => (
+                            <FlagBadge key={f} flag={f} />
+                          ))}
+                        </div>
+                      </td>
+                      <td className="px-4 py-3">
+                        <BetCell row={row} market={matched} />
+                      </td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           </div>

@@ -72,6 +72,7 @@ export default function ScannerPage() {
 
   // Shared
   const [result, setResult] = useState<string | null>(null)
+  const [scannedMarkets, setScannedMarkets] = useState<MarketInput[]>([])
   const [toast, setToast] = useState<Toast | null>(null)
 
   // ── Auto-scan ──────────────────────────────────────────────────────────────
@@ -144,6 +145,7 @@ export default function ScannerPage() {
       if (!scanRes.ok) throw new Error(scanData.error || 'Scan failed')
 
       setResult(scanData.result)
+      setScannedMarkets(scanData.markets || [])
       setScanPhase('done')
     } catch (err: any) {
       setToast({ message: err.message || 'Auto-scan failed', type: 'error' })
@@ -380,7 +382,7 @@ export default function ScannerPage() {
                 </div>
               </div>
             ) : result ? (
-              <ScannerTable markdown={result} />
+              <ScannerTable markdown={result} markets={scannedMarkets} />
             ) : null}
           </div>
         )}

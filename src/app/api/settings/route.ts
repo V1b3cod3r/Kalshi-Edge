@@ -16,6 +16,8 @@ export async function GET() {
         ...settings,
         anthropic_api_key: maskKey(settings.anthropic_api_key),
         kalshi_api_key: maskKey(settings.kalshi_api_key),
+        // Don't return the private key — just indicate whether it's saved
+        kalshi_private_key: settings.kalshi_private_key ? '[saved]' : '',
       },
     })
   } catch (error) {
@@ -40,6 +42,12 @@ export async function PUT(req: NextRequest) {
         newSettings.kalshi_api_key = current.kalshi_api_key
       }
     }
+    if (body.kalshi_private_key !== undefined) {
+      // Don't overwrite if client sends back the placeholder
+      if (body.kalshi_private_key === '[saved]' || body.kalshi_private_key === '') {
+        newSettings.kalshi_private_key = current.kalshi_private_key
+      }
+    }
 
     saveSettings(newSettings)
     return NextResponse.json({
@@ -47,6 +55,7 @@ export async function PUT(req: NextRequest) {
         ...newSettings,
         anthropic_api_key: maskKey(newSettings.anthropic_api_key),
         kalshi_api_key: maskKey(newSettings.kalshi_api_key),
+        kalshi_private_key: newSettings.kalshi_private_key ? '[saved]' : '',
       },
     })
   } catch (error) {

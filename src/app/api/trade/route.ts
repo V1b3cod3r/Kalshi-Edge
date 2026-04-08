@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSettings, getSession, saveSession } from '@/lib/storage'
-import { placeOrder } from '@/lib/kalshi'
+import { placeOrder, KalshiAuth } from '@/lib/kalshi'
 
 export async function POST(req: NextRequest) {
   try {
@@ -16,8 +16,15 @@ export async function POST(req: NextRequest) {
     }
 
     const settings = getSettings()
-    if (!settings.kalshi_api_key) {
-      return NextResponse.json({ error: 'Kalshi API key not configured. Add it in Settings.' }, { status: 400 })
+    if (!settings.kalshi_api_key || !settings.kalshi_private_key) {
+      return NextResponse.json(
+        { error: 'Kalshi API Key ID and Private Key are both required. Configure them in Settings.' },
+        { status: 400 }
+      )
+    }
+    const auth: KalshiAuth = {
+      keyId: settings.kalshi_api_key,
+      privateKey: settings.kalshi_private_key,
     }
 
     // Safety: cap dollar exposure
@@ -35,7 +42,7 @@ export async function POST(req: NextRequest) {
     }
 
     // Place the order
-    const result = await placeOrder(settings.kalshi_api_key, {
+    const result = await placeOrder(auth, {
       ticker,
       side,
       count,

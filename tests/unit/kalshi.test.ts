@@ -1,4 +1,18 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import type { KalshiAuth } from '@/lib/kalshi'
+
+// RSA signing requires real crypto — stub it out for unit tests
+vi.mock('crypto', async () => {
+  const actual = await vi.importActual<typeof import('crypto')>('crypto')
+  return {
+    ...actual,
+    createSign: () => ({
+      update: vi.fn(),
+      end: vi.fn(),
+      sign: vi.fn().mockReturnValue('mock-signature'),
+    }),
+  }
+})
 
 function mockFetch(response: { ok: boolean; status?: number; json?: () => Promise<any>; text?: () => Promise<string> }) {
   vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
@@ -7,6 +21,11 @@ function mockFetch(response: { ok: boolean; status?: number; json?: () => Promis
     json: response.json ?? (() => Promise.resolve({})),
     text: response.text ?? (() => Promise.resolve('')),
   }))
+}
+
+const TEST_AUTH: KalshiAuth = {
+  keyId: 'test-key-id',
+  privateKey: '-----BEGIN PRIVATE KEY-----\nfake\n-----END PRIVATE KEY-----',
 }
 
 describe('fetchMarkets', () => {
@@ -21,7 +40,7 @@ describe('fetchMarkets', () => {
     })
     const { fetchMarkets } = await import('@/lib/kalshi')
 
-    await fetchMarkets('test-api-key')
+    await fetchMarkets(null)
 
     const calledUrl = (fetch as any).mock.calls[0][0]
     expect(calledUrl).toContain('/markets')
@@ -35,7 +54,7 @@ describe('fetchMarkets', () => {
     })
     const { fetchMarkets } = await import('@/lib/kalshi')
 
-    await fetchMarkets('test-api-key', {
+    await fetchMarkets(null, {
       limit: 10,
       status: 'open',
       category: 'Sports',
@@ -51,17 +70,19 @@ describe('fetchMarkets', () => {
     expect(calledUrl).toContain('cursor=abc123')
   })
 
-  it('sends Authorization header with Bearer token', async () => {
+  it('sends RSA-PSS signed headers when auth provided', async () => {
     mockFetch({
       ok: true,
       json: () => Promise.resolve({ markets: [], cursor: null }),
     })
     const { fetchMarkets } = await import('@/lib/kalshi')
 
-    await fetchMarkets('my-secret-key')
+    await fetchMarkets(TEST_AUTH)
 
     const calledHeaders = (fetch as any).mock.calls[0][1].headers
-    expect(calledHeaders.Authorization).toBe('Bearer my-secret-key')
+    expect(calledHeaders['KALSHI-ACCESS-KEY']).toBe('test-key-id')
+    expect(calledHeaders['KALSHI-ACCESS-SIGNATURE']).toBe('mock-signature')
+    expect(calledHeaders['KALSHI-ACCESS-TIMESTAMP']).toBeDefined()
   })
 
   it('returns markets array and cursor', async () => {
@@ -74,7 +95,7 @@ describe('fetchMarkets', () => {
     })
     const { fetchMarkets } = await import('@/lib/kalshi')
 
-    const result = await fetchMarkets('key')
+    const result = await fetchMarkets(null)
 
     expect(result.markets).toEqual(mockMarkets)
     expect(result.cursor).toBe('page-2')
@@ -87,7 +108,7 @@ describe('fetchMarkets', () => {
     })
     const { fetchMarkets } = await import('@/lib/kalshi')
 
-    const result = await fetchMarkets('key')
+    const result = await fetchMarkets(null)
 
     expect(result.markets).toEqual([])
     expect(result.cursor).toBeNull()
@@ -101,7 +122,7 @@ describe('fetchMarkets', () => {
     })
     const { fetchMarkets } = await import('@/lib/kalshi')
 
-    await expect(fetchMarkets('bad-key')).rejects.toThrow('401')
+    await expect(fetchMarkets(null)).rejects.toThrow('401')
   })
 })
 
@@ -118,7 +139,7 @@ describe('fetchMarket', () => {
     })
     const { fetchMarket } = await import('@/lib/kalshi')
 
-    const result = await fetchMarket('key', 'SINGLE-1')
+    const result = await fetchMarket(null, 'SINGLE-1')
     expect(result).toEqual(market)
   })
 
@@ -130,7 +151,7 @@ describe('fetchMarket', () => {
     })
     const { fetchMarket } = await import('@/lib/kalshi')
 
-    const result = await fetchMarket('key', 'SINGLE-2')
+    const result = await fetchMarket(null, 'SINGLE-2')
     expect(result).toEqual(raw)
   })
 
@@ -142,25 +163,38 @@ describe('fetchMarket', () => {
     })
     const { fetchMarket } = await import('@/lib/kalshi')
 
-    await expect(fetchMarket('key', 'MISSING')).rejects.toThrow('404')
+    await expect(fetchMarket(null, 'MISSING')).rejects.toThrow('404')
   })
 })
 
-describe('getPortfolio', () => {
+describe('getPortfolioBalance', () => {
   beforeEach(() => {
     vi.resetModules()
   })
 
   it('returns portfolio data on success', async () => {
-    const portfolio = { balance: 10000, available_balance: 9500 }
+    const portfolio = { balance: 1000000, available_balance: 950000 }
     mockFetch({
       ok: true,
       json: () => Promise.resolve(portfolio),
     })
-    const { getPortfolio } = await import('@/lib/kalshi')
+    const { getPortfolioBalance } = await import('@/lib/kalshi')
 
-    const result = await getPortfolio('key')
+    const result = await getPortfolioBalance(TEST_AUTH)
     expect(result).toEqual(portfolio)
+  })
+
+  it('sends signed headers', async () => {
+    mockFetch({
+      ok: true,
+      json: () => Promise.resolve({ balance: 0 }),
+    })
+    const { getPortfolioBalance } = await import('@/lib/kalshi')
+
+    await getPortfolioBalance(TEST_AUTH)
+
+    const calledHeaders = (fetch as any).mock.calls[0][1].headers
+    expect(calledHeaders['KALSHI-ACCESS-KEY']).toBe('test-key-id')
   })
 
   it('throws on auth failure', async () => {
@@ -169,8 +203,8 @@ describe('getPortfolio', () => {
       status: 403,
       text: () => Promise.resolve('Forbidden'),
     })
-    const { getPortfolio } = await import('@/lib/kalshi')
+    const { getPortfolioBalance } = await import('@/lib/kalshi')
 
-    await expect(getPortfolio('bad-key')).rejects.toThrow('403')
+    await expect(getPortfolioBalance(TEST_AUTH)).rejects.toThrow('403')
   })
 })

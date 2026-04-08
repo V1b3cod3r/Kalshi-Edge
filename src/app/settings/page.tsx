@@ -41,6 +41,7 @@ export default function SettingsPage() {
   const [showKalshiKey, setShowKalshiKey] = useState(false)
   const [anthropicKeyInput, setAnthropicKeyInput] = useState('')
   const [kalshiKeyInput, setKalshiKeyInput] = useState('')
+  const [kalshiPrivateKeyInput, setKalshiPrivateKeyInput] = useState('')
 
   // Settings state
   const [minEdge, setMinEdge] = useState(3)
@@ -113,6 +114,7 @@ export default function SettingsPage() {
       }
       if (anthropicKeyInput) body.anthropic_api_key = anthropicKeyInput
       if (kalshiKeyInput) body.kalshi_api_key = kalshiKeyInput
+      if (kalshiPrivateKeyInput.trim()) body.kalshi_private_key = kalshiPrivateKeyInput.trim()
 
       const res = await fetch('/api/settings', {
         method: 'PUT',
@@ -124,6 +126,7 @@ export default function SettingsPage() {
       setSettings(data.settings)
       setAnthropicKeyInput('')
       setKalshiKeyInput('')
+      setKalshiPrivateKeyInput('')
       showToast('Settings saved', 'success')
     } catch (err: any) {
       showToast(err.message || 'Failed to save settings', 'error')
@@ -206,6 +209,7 @@ export default function SettingsPage() {
 
   const maskedAnthropicKey = (settings as AppSettings).anthropic_api_key || ''
   const maskedKalshiKey = (settings as AppSettings).kalshi_api_key || ''
+  const kalshiPrivateKeySaved = (settings as AppSettings).kalshi_private_key === '[saved]'
 
   return (
     <div className="p-8 max-w-3xl">
@@ -266,10 +270,10 @@ export default function SettingsPage() {
             )}
           </div>
 
-          {/* Kalshi */}
+          {/* Kalshi Key ID */}
           <div>
             <label style={labelStyle}>
-              Kalshi API Key
+              Kalshi API Key ID
               <a
                 href="https://kalshi.com/account/api"
                 target="_blank"
@@ -277,7 +281,7 @@ export default function SettingsPage() {
                 className="ml-2 normal-case font-normal"
                 style={{ color: '#6366f1', textDecoration: 'none', fontSize: '11px' }}
               >
-                Get key →
+                Kalshi API settings →
               </a>
             </label>
             <div className="flex gap-2">
@@ -286,7 +290,7 @@ export default function SettingsPage() {
                   type={showKalshiKey ? 'text' : 'password'}
                   value={kalshiKeyInput}
                   onChange={(e) => setKalshiKeyInput(e.target.value)}
-                  placeholder={maskedKalshiKey || 'Your Kalshi API key...'}
+                  placeholder={maskedKalshiKey || 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx'}
                   style={inputStyle}
                 />
               </div>
@@ -301,14 +305,55 @@ export default function SettingsPage() {
             </div>
             {maskedKalshiKey && (
               <p className="text-xs mt-1" style={{ color: '#22c55e' }}>
-                ✓ Key saved: {maskedKalshiKey}
+                ✓ Key ID saved: {maskedKalshiKey}
               </p>
             )}
             {!maskedKalshiKey && (
               <p className="text-xs mt-1" style={{ color: '#64748b' }}>
-                Required for live market data import
+                The UUID shown on your Kalshi API keys page
               </p>
             )}
+          </div>
+
+          {/* Kalshi Private Key */}
+          <div>
+            <label style={labelStyle}>
+              Kalshi RSA Private Key
+            </label>
+            {kalshiPrivateKeySaved && !kalshiPrivateKeyInput.trim() ? (
+              <div
+                className="flex items-center justify-between px-3 py-2.5 rounded-lg border text-sm"
+                style={{ borderColor: '#2a2a3e', backgroundColor: '#0d0d17' }}
+              >
+                <span style={{ color: '#22c55e' }}>✓ Private key saved</span>
+                <button
+                  type="button"
+                  onClick={() => setKalshiPrivateKeyInput(' ')}
+                  className="text-xs"
+                  style={{ color: '#64748b' }}
+                >
+                  Replace
+                </button>
+              </div>
+            ) : (
+              <textarea
+                rows={6}
+                value={kalshiPrivateKeyInput}
+                onChange={(e) => setKalshiPrivateKeyInput(e.target.value)}
+                placeholder={'-----BEGIN PRIVATE KEY-----\nMIIEvQ...\n-----END PRIVATE KEY-----'}
+                spellCheck={false}
+                style={{
+                  ...inputStyle,
+                  fontFamily: 'monospace',
+                  fontSize: '11px',
+                  resize: 'vertical',
+                  lineHeight: '1.5',
+                }}
+              />
+            )}
+            <p className="text-xs mt-1" style={{ color: '#64748b' }}>
+              RSA private key PEM downloaded when you created your Kalshi API key. Required for placing trades.
+            </p>
           </div>
 
           <button

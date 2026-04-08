@@ -1,4 +1,39 @@
+import { createSign, constants } from 'crypto'
+
 const KALSHI_BASE_URL = 'https://api.elections.kalshi.com/trade-api/v2'
+const PATH_PREFIX = '/trade-api/v2'
+
+// Kalshi uses RSA-PSS signed requests for all authenticated endpoints.
+// Docs: https://trading-api.kalshi.com/docs
+export interface KalshiAuth {
+  keyId: string      // API Key ID (UUID from Kalshi dashboard)
+  privateKey: string // RSA private key PEM
+}
+
+function getSignedHeaders(auth: KalshiAuth, method: string, urlPath: string): Record<string, string> {
+  const timestampMs = Date.now()
+  const msgToSign = `${timestampMs}${method.toUpperCase()}${urlPath}`
+
+  const signer = createSign('SHA256')
+  signer.update(msgToSign)
+  signer.end()
+
+  const signature = signer.sign(
+    {
+      key: auth.privateKey,
+      padding: constants.RSA_PKCS1_PSS_PADDING,
+      saltLength: constants.RSA_PSS_SALTLEN_DIGEST,
+    },
+    'base64'
+  )
+
+  return {
+    'KALSHI-ACCESS-KEY': auth.keyId,
+    'KALSHI-ACCESS-SIGNATURE': signature,
+    'KALSHI-ACCESS-TIMESTAMP': String(timestampMs),
+    'Content-Type': 'application/json',
+  }
+}
 
 interface FetchMarketsParams {
   limit?: number
@@ -10,8 +45,10 @@ interface FetchMarketsParams {
   search?: string
 }
 
+// Market read endpoints are public — no auth required.
+// Pass auth to get higher rate limits if desired (optional).
 export async function fetchMarkets(
-  apiKey: string,
+  auth: KalshiAuth | null,
   params?: FetchMarketsParams
 ): Promise<{ markets: any[]; cursor: string | null }> {
   const url = new URL(`${KALSHI_BASE_URL}/markets`)
@@ -26,12 +63,12 @@ export async function fetchMarkets(
     if (params.search) url.searchParams.set('search', params.search)
   }
 
-  const res = await fetch(url.toString(), {
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-  })
+  const headers: Record<string, string> =
+    auth?.keyId && auth?.privateKey
+      ? getSignedHeaders(auth, 'GET', `${PATH_PREFIX}/markets`)
+      : { 'Content-Type': 'application/json' }
+
+  const res = await fetch(url.toString(), { headers })
 
   if (!res.ok) {
     const text = await res.text()
@@ -45,13 +82,14 @@ export async function fetchMarkets(
   }
 }
 
-export async function fetchMarket(apiKey: string, ticker: string): Promise<any> {
-  const res = await fetch(`${KALSHI_BASE_URL}/markets/${ticker}`, {
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-  })
+export async function fetchMarket(auth: KalshiAuth | null, ticker: string): Promise<any> {
+  const path = `${PATH_PREFIX}/markets/${ticker}`
+  const headers: Record<string, string> =
+    auth?.keyId && auth?.privateKey
+      ? getSignedHeaders(auth, 'GET', path)
+      : { 'Content-Type': 'application/json' }
+
+  const res = await fetch(`${KALSHI_BASE_URL}/markets/${ticker}`, { headers })
 
   if (!res.ok) {
     const text = await res.text()
@@ -76,14 +114,15 @@ export interface PlaceOrderResult {
   ticker: string
   side: string
   count: number
-  yes_price: number   // cents
+  yes_price: number
   created_time: string
 }
 
 export async function placeOrder(
-  apiKey: string,
+  auth: KalshiAuth,
   req: PlaceOrderRequest
 ): Promise<PlaceOrderResult> {
+  const urlPath = `${PATH_PREFIX}/portfolio/orders`
   const body: Record<string, any> = {
     action: 'buy',
     type: 'limit',
@@ -99,12 +138,11 @@ export async function placeOrder(
     body.no_price = req.price_cents
   }
 
+  const headers = getSignedHeaders(auth, 'POST', urlPath)
+
   const res = await fetch(`${KALSHI_BASE_URL}/portfolio/orders`, {
     method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
+    headers,
     body: JSON.stringify(body),
   })
 
@@ -126,18 +164,38 @@ export async function placeOrder(
   }
 }
 
-export async function getPortfolio(apiKey: string): Promise<any> {
+export async function getPortfolioBalance(auth: KalshiAuth): Promise<any> {
+  const urlPath = `${PATH_PREFIX}/portfolio/balance`
   const res = await fetch(`${KALSHI_BASE_URL}/portfolio/balance`, {
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
+    headers: getSignedHeaders(auth, 'GET', urlPath),
   })
-
   if (!res.ok) {
     const text = await res.text()
     throw new Error(`Kalshi API error ${res.status}: ${text}`)
   }
+  return res.json()
+}
 
+export async function getPortfolioPositions(auth: KalshiAuth): Promise<any> {
+  const urlPath = `${PATH_PREFIX}/portfolio/positions`
+  const res = await fetch(`${KALSHI_BASE_URL}/portfolio/positions`, {
+    headers: getSignedHeaders(auth, 'GET', urlPath),
+  })
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(`Kalshi API error ${res.status}: ${text}`)
+  }
+  return res.json()
+}
+
+export async function getPortfolioSettlements(auth: KalshiAuth, limit = 50): Promise<any> {
+  const urlPath = `${PATH_PREFIX}/portfolio/settlements`
+  const res = await fetch(`${KALSHI_BASE_URL}/portfolio/settlements?limit=${limit}`, {
+    headers: getSignedHeaders(auth, 'GET', urlPath),
+  })
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(`Kalshi API error ${res.status}: ${text}`)
+  }
   return res.json()
 }

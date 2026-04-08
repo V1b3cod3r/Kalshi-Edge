@@ -20,7 +20,7 @@ export async function GET(req: NextRequest) {
     const limit = searchParams.get('limit') ? parseInt(searchParams.get('limit')!) : 20
     const cursor = searchParams.get('cursor') || undefined
 
-    const result = await fetchMarkets(settings.kalshi_api_key, {
+    const result = await fetchMarkets(null, {
       limit,
       cursor,
       search,

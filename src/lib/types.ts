@@ -53,9 +53,10 @@ export interface Prediction {
 
 export interface AppSettings {
   anthropic_api_key: string
-  kalshi_api_key: string
-  min_edge_threshold: number // default 0.03
-  max_position_pct: number // default 0.05
+  kalshi_api_key: string       // RSA key ID (UUID from Kalshi dashboard)
+  kalshi_private_key: string   // RSA private key PEM (-----BEGIN PRIVATE KEY-----)
+  min_edge_threshold: number   // default 0.03
+  max_position_pct: number     // default 0.05
   max_corr_exposure_pct: number // default 0.15
   default_kelly_fraction: 'low' | 'medium' | 'high'
 }

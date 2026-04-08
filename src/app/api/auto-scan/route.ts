@@ -165,7 +165,7 @@ export async function POST(req: NextRequest) {
     if (seriesToFetch.length > 0) {
       const results = await Promise.all(
         seriesToFetch.map((series) =>
-          fetchMarkets(settings.kalshi_api_key, {
+          fetchMarkets(null, {
             series_ticker: series,
             limit: 50,
           }).catch(() => ({ markets: [], cursor: null }))
@@ -178,7 +178,7 @@ export async function POST(req: NextRequest) {
     if (rawMarkets.length === 0) {
       let cursor: string | null = null
       for (let page = 0; page < 10; page++) {
-        const result = await fetchMarkets(settings.kalshi_api_key, {
+        const result = await fetchMarkets(null, {
           limit: 100,
           ...(cursor ? { cursor } : {}),
         })

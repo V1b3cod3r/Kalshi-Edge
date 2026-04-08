@@ -1,32 +1,28 @@
 import { NextResponse } from 'next/server'
 import { getSettings, getSession } from '@/lib/storage'
+import { getPortfolioBalance, getPortfolioPositions, getPortfolioSettlements, KalshiAuth } from '@/lib/kalshi'
 
 export const dynamic = 'force-dynamic'
-
-const KALSHI_BASE = 'https://api.elections.kalshi.com/trade-api/v2'
-
-async function kalshiGet(apiKey: string, path: string) {
-  const res = await fetch(`${KALSHI_BASE}${path}`, {
-    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-  })
-  if (!res.ok) {
-    const text = await res.text()
-    throw new Error(`Kalshi ${res.status}: ${text}`)
-  }
-  return res.json()
-}
 
 export async function GET() {
   try {
     const settings = getSettings()
-    if (!settings.kalshi_api_key) {
-      return NextResponse.json({ error: 'Kalshi API key not configured' }, { status: 400 })
+    if (!settings.kalshi_api_key || !settings.kalshi_private_key) {
+      return NextResponse.json(
+        { error: 'Kalshi API Key ID and Private Key are both required. Configure them in Settings.' },
+        { status: 400 }
+      )
+    }
+
+    const auth: KalshiAuth = {
+      keyId: settings.kalshi_api_key,
+      privateKey: settings.kalshi_private_key,
     }
 
     const [balanceData, positionsData, settlementsData] = await Promise.all([
-      kalshiGet(settings.kalshi_api_key, '/portfolio/balance'),
-      kalshiGet(settings.kalshi_api_key, '/portfolio/positions').catch(() => ({ market_positions: [] })),
-      kalshiGet(settings.kalshi_api_key, '/portfolio/settlements?limit=50').catch(() => ({ settlements: [] })),
+      getPortfolioBalance(auth),
+      getPortfolioPositions(auth).catch(() => ({ market_positions: [] })),
+      getPortfolioSettlements(auth, 50).catch(() => ({ settlements: [] })),
     ])
 
     const session = getSession()

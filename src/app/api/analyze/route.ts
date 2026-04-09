@@ -4,6 +4,7 @@ import { buildAnalysisSystemPrompt, buildAnalysisUserMessage } from '@/lib/promp
 import { callClaude } from '@/lib/claude'
 import { MarketInput } from '@/lib/types'
 import { getSignalsForMarket } from '@/lib/signals'
+import { getMarketWebContext } from '@/lib/search'
 
 export async function POST(req: NextRequest) {
   try {
@@ -26,11 +27,14 @@ export async function POST(req: NextRequest) {
     const views = getViews()
     const session = getSession()
 
-    // Fetch real-time signals for this market (best-effort, never blocks)
-    const signals = await getSignalsForMarket(market.id ?? '', market.id?.split('-')[0])
+    // Fetch real-time signals + web context in parallel (best-effort, never blocks)
+    const [signals, webContext] = await Promise.all([
+      getSignalsForMarket(market.id ?? '', market.id?.split('-')[0]),
+      getMarketWebContext(market.title, settings.tavily_api_key || undefined),
+    ])
 
     const systemPrompt = buildAnalysisSystemPrompt()
-    const userMessage = buildAnalysisUserMessage(market, views, session, signals)
+    const userMessage = buildAnalysisUserMessage(market, views, session, signals, webContext)
 
     const result = await callClaude(settings.anthropic_api_key, systemPrompt, userMessage)
 

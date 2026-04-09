@@ -55,6 +55,7 @@ export interface AppSettings {
   anthropic_api_key: string
   kalshi_api_key: string       // RSA key ID (UUID from Kalshi dashboard)
   kalshi_private_key: string   // RSA private key PEM (-----BEGIN PRIVATE KEY-----)
+  tavily_api_key: string       // Tavily AI Search (free tier: 1000 searches/month)
   min_edge_threshold: number   // default 0.03
   max_position_pct: number     // default 0.05
   max_corr_exposure_pct: number // default 0.15

@@ -18,6 +18,7 @@ export async function GET() {
         kalshi_api_key: maskKey(settings.kalshi_api_key),
         // Don't return the private key — just indicate whether it's saved
         kalshi_private_key: settings.kalshi_private_key ? '[saved]' : '',
+        tavily_api_key: maskKey(settings.tavily_api_key),
       },
     })
   } catch (error) {
@@ -56,6 +57,7 @@ export async function PUT(req: NextRequest) {
         anthropic_api_key: maskKey(newSettings.anthropic_api_key),
         kalshi_api_key: maskKey(newSettings.kalshi_api_key),
         kalshi_private_key: newSettings.kalshi_private_key ? '[saved]' : '',
+        tavily_api_key: maskKey(newSettings.tavily_api_key),
       },
     })
   } catch (error) {

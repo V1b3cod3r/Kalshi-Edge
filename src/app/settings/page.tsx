@@ -42,6 +42,7 @@ export default function SettingsPage() {
   const [anthropicKeyInput, setAnthropicKeyInput] = useState('')
   const [kalshiKeyInput, setKalshiKeyInput] = useState('')
   const [kalshiPrivateKeyInput, setKalshiPrivateKeyInput] = useState('')
+  const [tavilyKeyInput, setTavilyKeyInput] = useState('')
 
   // Settings state
   const [minEdge, setMinEdge] = useState(3)
@@ -115,6 +116,7 @@ export default function SettingsPage() {
       if (anthropicKeyInput) body.anthropic_api_key = anthropicKeyInput
       if (kalshiKeyInput) body.kalshi_api_key = kalshiKeyInput
       if (kalshiPrivateKeyInput.trim()) body.kalshi_private_key = kalshiPrivateKeyInput.trim()
+      if (tavilyKeyInput) body.tavily_api_key = tavilyKeyInput
 
       const res = await fetch('/api/settings', {
         method: 'PUT',
@@ -127,6 +129,7 @@ export default function SettingsPage() {
       setAnthropicKeyInput('')
       setKalshiKeyInput('')
       setKalshiPrivateKeyInput('')
+      setTavilyKeyInput('')
       showToast('Settings saved', 'success')
     } catch (err: any) {
       showToast(err.message || 'Failed to save settings', 'error')
@@ -354,6 +357,41 @@ export default function SettingsPage() {
             <p className="text-xs mt-1" style={{ color: '#64748b' }}>
               RSA private key PEM downloaded when you created your Kalshi API key. Required for placing trades.
             </p>
+          </div>
+
+          {/* Tavily */}
+          <div>
+            <label style={labelStyle}>
+              Tavily API Key
+              <span className="ml-2 normal-case font-normal" style={{ color: '#64748b', fontSize: '11px' }}>
+                optional — adds AI web search to every analysis
+              </span>
+              <a
+                href="https://app.tavily.com"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="ml-2 normal-case font-normal"
+                style={{ color: '#6366f1', textDecoration: 'none', fontSize: '11px' }}
+              >
+                Get free key →
+              </a>
+            </label>
+            <input
+              type="password"
+              value={tavilyKeyInput}
+              onChange={(e) => setTavilyKeyInput(e.target.value)}
+              placeholder={(settings as AppSettings).tavily_api_key ? 'tvly-••••••••' : 'tvly-...'}
+              style={inputStyle}
+            />
+            {(settings as AppSettings).tavily_api_key ? (
+              <p className="text-xs mt-1" style={{ color: '#22c55e' }}>
+                ✓ Tavily key saved — web search active
+              </p>
+            ) : (
+              <p className="text-xs mt-1" style={{ color: '#64748b' }}>
+                Free tier: 1,000 searches/month. Without this, Google News RSS is used (still good).
+              </p>
+            )}
           </div>
 
           <button

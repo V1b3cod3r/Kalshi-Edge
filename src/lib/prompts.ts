@@ -1,5 +1,6 @@
 import { MacroView, SessionState, MarketInput } from './types'
 import { Signal, formatSignals } from './signals'
+import { WebContext, formatWebContext } from './search'
 
 export function buildAnalysisSystemPrompt(): string {
   return `You are **Kalshi Edge**, an expert prediction market trader specializing in finding and exploiting pricing inefficiencies on Kalshi. Your goal is to identify markets where the true probability of an outcome differs meaningfully from the implied probability in the current market price, then recommend trades sized by the Kelly Criterion to maximize long-run bankroll growth.
@@ -252,6 +253,7 @@ export function buildAnalysisUserMessage(
   views: MacroView[],
   session: SessionState,
   signals: Signal[] = [],
+  webContext?: WebContext,
 ): string {
   let msg = ''
 
@@ -327,6 +329,13 @@ export function buildAnalysisUserMessage(
     msg += `\n${signalBlock}\n`
   }
 
+  if (webContext) {
+    const webBlock = formatWebContext(webContext)
+    if (webBlock) {
+      msg += `\n${webBlock}\n`
+    }
+  }
+
   return msg
 }
 
@@ -335,6 +344,7 @@ export function buildScannerUserMessage(
   views: MacroView[],
   session: SessionState,
   signalMap: Map<string, Signal[]> = new Map(),
+  webContextMap: Map<string, WebContext> = new Map(),
 ): string {
   let msg = ''
 
@@ -397,6 +407,13 @@ export function buildScannerUserMessage(
     const signalBlock = formatSignals(signals ?? [])
     if (signalBlock) {
       msg += `   ${signalBlock.replace(/\n/g, '\n   ')}\n`
+    }
+    const webCtx = webContextMap.get(m.id ?? '')
+    if (webCtx) {
+      const webBlock = formatWebContext(webCtx)
+      if (webBlock) {
+        msg += `   ${webBlock.replace(/\n/g, '\n   ')}\n`
+      }
     }
     msg += '\n'
   })

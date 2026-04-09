@@ -24,6 +24,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   anthropic_api_key: '',
   kalshi_api_key: '',
   kalshi_private_key: '',
+  tavily_api_key: '',
   min_edge_threshold: 0.03,
   max_position_pct: 0.05,
   max_corr_exposure_pct: 0.15,

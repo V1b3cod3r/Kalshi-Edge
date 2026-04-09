@@ -5,6 +5,7 @@ import { callClaude } from '@/lib/claude'
 import { fetchMarkets } from '@/lib/kalshi'
 import { MarketInput } from '@/lib/types'
 import { getSignalsForMarkets } from '@/lib/signals'
+import { getWebContextForMarkets } from '@/lib/search'
 
 // Maps Kalshi category strings to our 4 standard categories
 function mapCategory(kalshiCategory: string | undefined): string {
@@ -215,15 +216,18 @@ export async function POST(req: NextRequest) {
       )
     }
 
-    // Step 3: Fetch real-time signals for all markets in parallel
-    const signalMap = await getSignalsForMarkets(normalized)
+    // Step 3: Fetch real-time signals + web context in parallel
+    const [signalMap, webContextMap] = await Promise.all([
+      getSignalsForMarkets(normalized),
+      getWebContextForMarkets(normalized, settings.tavily_api_key || undefined),
+    ])
 
-    // Step 4: Run Claude scanner with live signals injected
+    // Step 4: Run Claude scanner with live signals + web context injected
     const views = getViews()
     const session = getSession()
 
     const systemPrompt = buildScannerSystemPrompt()
-    const userMessage = buildScannerUserMessage(normalized, views, session, signalMap)
+    const userMessage = buildScannerUserMessage(normalized, views, session, signalMap, webContextMap)
 
     const rawResult = await callClaude(settings.anthropic_api_key, systemPrompt, userMessage)
 

@@ -34,9 +34,10 @@ function normalizeMarket(m: any): MarketInput | null {
   const title = m.title || m.question || m.subtitle || m.event_title
   if (!title) return null
 
-  // YES price: Kalshi API returns *_dollars fields in decimal (0–1)
-  // Fall back to legacy cent-based fields for older API responses
+  // Use ask prices for order placement — bidding at ask fills immediately.
+  // Midpoint would leave orders resting below the ask.
   let yes_price: number | undefined
+  let no_price: number | undefined
 
   // Helper: parse a price value that may be a string or number
   const p = (v: any): number => (v == null ? 0 : Number(v))
@@ -47,16 +48,11 @@ function normalizeMarket(m: any): MarketInput | null {
   const nb = p(m.no_bid_dollars ?? m.no_bid)
   const last = p(m.last_price_dollars ?? m.last_price)
 
-  // YES bid/ask midpoint
-  if (ya > 0 && yb > 0) {
-    yes_price = (ya + yb) / 2
-  } else if (ya > 0) {
+  // YES ask (cost to buy YES)
+  if (ya > 0) {
     yes_price = ya
   } else if (yb > 0) {
     yes_price = yb
-  } else if (na > 0 && nb > 0) {
-    // Derive YES from NO midpoint
-    yes_price = 1 - (na + nb) / 2
   } else if (na > 0) {
     yes_price = 1 - na
   } else if (nb > 0) {
@@ -65,13 +61,21 @@ function normalizeMarket(m: any): MarketInput | null {
     yes_price = last
   }
 
+  // NO ask (cost to buy NO)
+  if (na > 0) {
+    no_price = na
+  } else if (nb > 0) {
+    no_price = nb
+  } else if (yes_price !== undefined) {
+    no_price = 1 - yes_price
+  }
+
   // Legacy cent-based prices (1–99): convert to decimal
   if (yes_price !== undefined && yes_price > 1) yes_price = yes_price / 100
+  if (no_price !== undefined && no_price > 1) no_price = no_price / 100
 
   // No valid price found — drop the market
-  if (!yes_price) return null
-
-  const no_price = 1 - yes_price
+  if (!yes_price || !no_price) return null
 
   // Volume: Kalshi returns volume_24h_fp / volume_fp as decimal dollar strings
   const volume_24h =

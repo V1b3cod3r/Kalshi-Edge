@@ -13,6 +13,16 @@ vi.mock('@anthropic-ai/sdk', () => ({
   },
 }))
 
+// Prevent real network calls from signals + search modules
+vi.mock('@/lib/signals', () => ({
+  getSignalsForMarket: vi.fn().mockResolvedValue([]),
+  formatSignals: vi.fn().mockReturnValue(''),
+}))
+vi.mock('@/lib/search', () => ({
+  getMarketWebContext: vi.fn().mockResolvedValue({ query: '', news: [], polymarket: undefined }),
+  formatWebContext: vi.fn().mockReturnValue(''),
+}))
+
 let tmpDir: string
 
 beforeEach(() => {

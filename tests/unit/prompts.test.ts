@@ -78,7 +78,7 @@ describe('buildScannerSystemPrompt', () => {
 
   it('describes composite score formula', () => {
     const prompt = buildScannerSystemPrompt()
-    expect(prompt).toContain('Composite score')
+    expect(prompt).toContain('score ≥')
   })
 })
 

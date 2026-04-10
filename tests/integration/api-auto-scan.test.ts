@@ -13,6 +13,33 @@ vi.mock('@anthropic-ai/sdk', () => ({
   },
 }))
 
+// Prevent real network calls from signals + search modules
+vi.mock('@/lib/signals', () => ({
+  getSignalsForMarkets: vi.fn().mockResolvedValue(new Map()),
+  formatSignals: vi.fn().mockReturnValue(''),
+}))
+vi.mock('@/lib/search', () => ({
+  getWebContextForMarkets: vi.fn().mockResolvedValue(new Map()),
+  formatWebContext: vi.fn().mockReturnValue(''),
+}))
+
+// Return valid scanner JSON from Claude (ticker must match the market being tested)
+function mockClaudeScan(tickers: string[]) {
+  const scanJson = JSON.stringify({
+    opportunities: tickers.map(ticker => ({
+      ticker,
+      action: 'BET',
+      direction: 'YES',
+      score: 75,
+      edge: 0.10,
+      rationale: 'test',
+    })),
+    screened_out: [],
+    session_notes: 'test session',
+  })
+  mockCreate.mockResolvedValue({ content: [{ type: 'text', text: scanJson }] })
+}
+
 let tmpDir: string
 
 beforeEach(() => {
@@ -112,10 +139,7 @@ describe('POST /api/auto-scan', () => {
     mockKalshiMarkets([
       { ticker: 'FED-DEC', title: 'Fed cut December', yes_ask: 45, yes_bid: 43, volume_24h: 5000 },
     ])
-
-    mockCreate.mockResolvedValue({
-      content: [{ type: 'text', text: 'Scan result' }],
-    })
+    mockClaudeScan(['FED-DEC'])
 
     vi.resetModules()
     const { POST } = await import('@/app/api/auto-scan/route')
@@ -125,9 +149,9 @@ describe('POST /api/auto-scan', () => {
     const data = await res.json()
 
     expect(res.status).toBe(200)
-    // yes_price should be (45+43)/2 / 100 = 0.44
-    expect(data.markets[0].yes_price).toBeCloseTo(0.44, 2)
-    expect(data.markets[0].no_price).toBeCloseTo(0.56, 2)
+    // yes_price uses ask price: 45 cents → 0.45 decimal
+    expect(data.opportunities[0].yes_price).toBeCloseTo(0.45, 2)
+    expect(data.opportunities[0].no_price).toBeCloseTo(0.55, 2)
   })
 
   it('falls back to last_price when yes_ask and yes_bid are zero', async () => {
@@ -141,10 +165,7 @@ describe('POST /api/auto-scan', () => {
     mockKalshiMarkets([
       { ticker: 'FALLBACK', title: 'Fallback price test', yes_ask: 0, yes_bid: 0, last_price: 50, volume_24h: 2000 },
     ])
-
-    mockCreate.mockResolvedValue({
-      content: [{ type: 'text', text: 'Scan result' }],
-    })
+    mockClaudeScan(['FALLBACK'])
 
     vi.resetModules()
     const { POST } = await import('@/app/api/auto-scan/route')
@@ -154,7 +175,7 @@ describe('POST /api/auto-scan', () => {
     const data = await res.json()
 
     expect(res.status).toBe(200)
-    expect(data.markets[0].yes_price).toBeCloseTo(0.5, 2)
+    expect(data.opportunities[0].yes_price).toBeCloseTo(0.5, 2)
   })
 
   it('filters out markets with yes_price below 0.03', async () => {
@@ -168,10 +189,7 @@ describe('POST /api/auto-scan', () => {
       { ticker: 'EXTREME-LOW', title: 'Near zero', yes_ask: 2, yes_bid: 1, volume_24h: 1000 },
       { ticker: 'NORMAL', title: 'Normal market', yes_ask: 45, yes_bid: 43, volume_24h: 5000 },
     ])
-
-    mockCreate.mockResolvedValue({
-      content: [{ type: 'text', text: 'Scan result' }],
-    })
+    mockClaudeScan(['NORMAL'])
 
     vi.resetModules()
     const { POST } = await import('@/app/api/auto-scan/route')
@@ -181,8 +199,9 @@ describe('POST /api/auto-scan', () => {
     const data = await res.json()
 
     expect(res.status).toBe(200)
-    expect(data.markets).toHaveLength(1)
-    expect(data.markets[0].title).toBe('Normal market')
+    // EXTREME-LOW filtered out — only NORMAL passes to Claude
+    expect(data.markets_scanned).toBe(1)
+    expect(data.opportunities[0].ticker).toBe('NORMAL')
   })
 
   it('filters out markets with yes_price above 0.97', async () => {
@@ -196,10 +215,7 @@ describe('POST /api/auto-scan', () => {
       { ticker: 'EXTREME-HIGH', title: 'Near certain', yes_ask: 98, yes_bid: 97, volume_24h: 1000 },
       { ticker: 'NORMAL', title: 'Normal market', yes_ask: 55, yes_bid: 53, volume_24h: 5000 },
     ])
-
-    mockCreate.mockResolvedValue({
-      content: [{ type: 'text', text: 'Scan result' }],
-    })
+    mockClaudeScan(['NORMAL'])
 
     vi.resetModules()
     const { POST } = await import('@/app/api/auto-scan/route')
@@ -209,8 +225,9 @@ describe('POST /api/auto-scan', () => {
     const data = await res.json()
 
     expect(res.status).toBe(200)
-    expect(data.markets).toHaveLength(1)
-    expect(data.markets[0].title).toBe('Normal market')
+    // EXTREME-HIGH filtered out — only NORMAL passes to Claude
+    expect(data.markets_scanned).toBe(1)
+    expect(data.opportunities[0].ticker).toBe('NORMAL')
   })
 
   it('applies min_volume filter', async () => {
@@ -224,10 +241,7 @@ describe('POST /api/auto-scan', () => {
       { ticker: 'LOW-VOL', title: 'Low volume', yes_ask: 45, yes_bid: 43, volume_24h: 100 },
       { ticker: 'HIGH-VOL', title: 'High volume', yes_ask: 55, yes_bid: 53, volume_24h: 5000 },
     ])
-
-    mockCreate.mockResolvedValue({
-      content: [{ type: 'text', text: 'Scan result' }],
-    })
+    mockClaudeScan(['HIGH-VOL'])
 
     vi.resetModules()
     const { POST } = await import('@/app/api/auto-scan/route')
@@ -237,8 +251,9 @@ describe('POST /api/auto-scan', () => {
     const data = await res.json()
 
     expect(res.status).toBe(200)
-    expect(data.markets).toHaveLength(1)
-    expect(data.markets[0].title).toBe('High volume')
+    // LOW-VOL filtered out — only HIGH-VOL passes to Claude
+    expect(data.markets_scanned).toBe(1)
+    expect(data.opportunities[0].ticker).toBe('HIGH-VOL')
   })
 
   it('sorts by volume descending and returns top N', async () => {
@@ -253,10 +268,7 @@ describe('POST /api/auto-scan', () => {
       { ticker: 'HIGH', title: 'High volume market', yes_ask: 60, yes_bid: 58, volume_24h: 10000 },
       { ticker: 'MED', title: 'Medium volume market', yes_ask: 50, yes_bid: 48, volume_24h: 2000 },
     ])
-
-    mockCreate.mockResolvedValue({
-      content: [{ type: 'text', text: 'Scan result' }],
-    })
+    mockClaudeScan(['HIGH', 'MED'])
 
     vi.resetModules()
     const { POST } = await import('@/app/api/auto-scan/route')
@@ -266,13 +278,14 @@ describe('POST /api/auto-scan', () => {
     const data = await res.json()
 
     expect(res.status).toBe(200)
+    // limit=2 keeps the two highest volume markets (LOW dropped)
     expect(data.markets_scanned).toBe(2)
-    // Should keep the two highest volume markets
-    expect(data.markets[0].title).toBe('High volume market')
-    expect(data.markets[1].title).toBe('Medium volume market')
+    // Volume ordering: Claude user message should mention HIGH before MED
+    const userMsg = mockCreate.mock.calls[0][0].messages[0].content
+    expect(userMsg.indexOf('High volume')).toBeLessThan(userMsg.indexOf('Medium volume'))
   })
 
-  it('returns result, markets_scanned, and markets on success', async () => {
+  it('returns opportunities, screened_out, and markets_scanned on success', async () => {
     const { saveSettings, getSettings } = await import('@/lib/storage')
     const settings = getSettings()
     settings.kalshi_api_key = 'kx-test-key'
@@ -280,10 +293,7 @@ describe('POST /api/auto-scan', () => {
     saveSettings(settings)
 
     mockKalshiMarkets(openMarkets)
-
-    mockCreate.mockResolvedValue({
-      content: [{ type: 'text', text: '## Scan Results\nTop pick: FED-DEC' }],
-    })
+    mockClaudeScan(['FED-DEC'])
 
     vi.resetModules()
     const { POST } = await import('@/app/api/auto-scan/route')
@@ -293,9 +303,10 @@ describe('POST /api/auto-scan', () => {
     const data = await res.json()
 
     expect(res.status).toBe(200)
-    expect(data.result).toContain('Scan Results')
+    expect(Array.isArray(data.opportunities)).toBe(true)
+    expect(Array.isArray(data.screened_out)).toBe(true)
+    expect(typeof data.session_notes).toBe('string')
     expect(typeof data.markets_scanned).toBe('number')
-    expect(Array.isArray(data.markets)).toBe(true)
-    expect(data.markets_scanned).toBe(data.markets.length)
+    expect(data.markets_scanned).toBeGreaterThan(0)
   })
 })

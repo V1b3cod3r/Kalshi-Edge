@@ -6,6 +6,8 @@ vi.mock('crypto', async () => {
   const actual = await vi.importActual<typeof import('crypto')>('crypto')
   return {
     ...actual,
+    // normalizePem calls createPrivateKey; mock it so fake test PEMs don't throw
+    createPrivateKey: vi.fn().mockReturnValue({ type: 'private', asymmetricKeyType: 'rsa' }),
     createSign: () => ({
       update: vi.fn(),
       end: vi.fn(),

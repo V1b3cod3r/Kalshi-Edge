@@ -67,13 +67,16 @@ function normalizeMarket(m: any): MarketInput | null {
     no_price = na
   } else if (nb > 0) {
     no_price = nb
-  } else if (yes_price !== undefined) {
-    no_price = 1 - yes_price
   }
 
-  // Legacy cent-based prices (1–99): convert to decimal
+  // Legacy cent-based prices (1–99): convert to decimal BEFORE deriving no_price
   if (yes_price !== undefined && yes_price > 1) yes_price = yes_price / 100
   if (no_price !== undefined && no_price > 1) no_price = no_price / 100
+
+  // Derive no_price from converted yes_price if not available directly
+  if (no_price === undefined && yes_price !== undefined) {
+    no_price = parseFloat((1 - yes_price).toFixed(4))
+  }
 
   // No valid price found — drop the market
   if (!yes_price || !no_price) return null
@@ -178,6 +181,15 @@ export async function POST(req: NextRequest) {
       )
       rawMarkets = results.flatMap((r) => r.markets)
     }
+
+    // Deduplicate by ticker — same market can appear across multiple series queries
+    const seenTickers = new Set<string>()
+    rawMarkets = rawMarkets.filter((m: any) => {
+      const key = m.ticker || m.id
+      if (!key || seenTickers.has(key)) return false
+      seenTickers.add(key)
+      return true
+    })
 
     // Fallback: if series queries returned nothing, page through generic endpoint
     if (rawMarkets.length === 0) {

@@ -139,7 +139,7 @@ export async function searchTavily(
 // ── Polymarket cross-reference ───────────────────────────────────────────────
 
 export async function searchPolymarket(query: string, maxResults = 2): Promise<PolymarketRef[]> {
-  const url = `https://gamma-api.polymarket.com/markets?search=${encodeURIComponent(query)}&limit=5&active=true&closed=false`
+  const url = `https://gamma-api.polymarket.com/markets?search=${encodeURIComponent(query)}&limit=10&active=true&closed=false`
   const res = await fetchWithTimeout(url, { headers: { 'User-Agent': 'Mozilla/5.0' } })
   if (!res) return []
 
@@ -147,10 +147,21 @@ export async function searchPolymarket(query: string, maxResults = 2): Promise<P
   if (!data) return []
 
   const markets: any[] = Array.isArray(data) ? data : (data.data ?? data.markets ?? [])
+
+  // Build a set of significant query words (>3 chars, no stop words) for relevance filtering
+  const stopWords = new Set(['will', 'the', 'and', 'for', 'that', 'this', 'with', 'from', 'before', 'after', 'what', 'when', 'than', 'more', 'have', 'been'])
+  const queryWords = query.toLowerCase().split(/\W+/).filter(w => w.length > 3 && !stopWords.has(w))
+
   const refs: PolymarketRef[] = []
 
   for (const m of markets) {
     if (!m.question || !m.outcomePrices) continue
+
+    // Relevance check: question must share at least one significant word with query
+    const qLower = m.question.toLowerCase()
+    const isRelevant = queryWords.some(w => qLower.includes(w))
+    if (!isRelevant) continue
+
     let prices: string[]
     try {
       prices = Array.isArray(m.outcomePrices) ? m.outcomePrices : JSON.parse(m.outcomePrices)
@@ -160,7 +171,7 @@ export async function searchPolymarket(query: string, maxResults = 2): Promise<P
     if (prices.length < 2) continue
     const yes = Math.round(parseFloat(prices[0]) * 100)
     const no = Math.round(parseFloat(prices[1]) * 100)
-    if (yes <= 0 || yes >= 100) continue  // skip unpriced/resolved markets
+    if (yes <= 0 || yes >= 100) continue
 
     const volNum = Number(m.volume ?? 0)
     const volume = volNum >= 1000 ? `$${(volNum / 1000).toFixed(0)}k` : volNum > 0 ? `$${volNum.toFixed(0)}` : ''

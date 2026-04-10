@@ -2,7 +2,8 @@ import fs from 'fs'
 import path from 'path'
 import { MacroView, SessionState, AppSettings, Prediction } from './types'
 
-const DATA_DIR = path.join(process.cwd(), 'data')
+// Support DATA_DIR env var for cloud deployments (Railway mounts a volume here)
+const DATA_DIR = process.env.DATA_DIR ?? path.join(process.cwd(), 'data')
 
 const VIEWS_FILE = path.join(DATA_DIR, 'views.json')
 const SESSION_FILE = path.join(DATA_DIR, 'session.json')

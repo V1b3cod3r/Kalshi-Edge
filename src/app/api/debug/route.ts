@@ -59,7 +59,39 @@ export async function GET(req: Request) {
       return NextResponse.json({ cursor: data.cursor, summary })
     }
 
-    return NextResponse.json({ modes: ['series', 'events', 'sample'] })
+    if (mode === 'key') {
+      // Diagnostic: show info about the stored private key without revealing it
+      const raw = settings.kalshi_private_key ?? ''
+      if (!raw) return NextResponse.json({ error: 'No private key stored' })
+
+      const hasPemHeader = raw.includes('-----BEGIN')
+      const hasPemFooter = raw.includes('-----END')
+      const literalBackslashN = (raw.match(/\\n/g) ?? []).length
+      const actualNewlines = (raw.match(/\n/g) ?? []).length
+      const carriageReturns = (raw.match(/\r/g) ?? []).length
+      const length = raw.length
+      const first40 = raw.slice(0, 40).replace(/\n/g, '↵').replace(/\r/g, '↩')
+      const last40 = raw.slice(-40).replace(/\n/g, '↵').replace(/\r/g, '↩')
+
+      // Try to parse the key and report the result
+      let parseResult = 'not attempted'
+      try {
+        const { createPrivateKey } = await import('crypto')
+        let normalized = raw.replace(/\\n/g, '\n').replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim()
+        createPrivateKey(normalized)
+        parseResult = 'SUCCESS'
+      } catch (e: any) {
+        parseResult = `FAIL: ${e.message}`
+      }
+
+      return NextResponse.json({
+        length, hasPemHeader, hasPemFooter,
+        literalBackslashN, actualNewlines, carriageReturns,
+        first40, last40, parseResult,
+      })
+    }
+
+    return NextResponse.json({ modes: ['series', 'events', 'sample', 'key'] })
   } catch (err: any) {
     return NextResponse.json({ error: err.message })
   }

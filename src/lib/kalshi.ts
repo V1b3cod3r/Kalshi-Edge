@@ -10,14 +10,37 @@ export interface KalshiAuth {
   privateKey: string // RSA private key PEM
 }
 
+function normalizePem(raw: string): string {
+  // 1. Replace literal two-char \n sequences (from JSON stringification artifacts)
+  let s = raw.replace(/\\n/g, '\n')
+  // 2. Normalise Windows CRLF and bare CR to LF
+  s = s.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+  // 3. Trim surrounding whitespace
+  s = s.trim()
+
+  // 4. Reconstruct PEM with standard 64-char line wrapping so OpenSSL can parse it
+  //    regardless of how the base64 body was originally line-wrapped.
+  const headerMatch = s.match(/-----BEGIN ([^-]+)-----/)
+  const footerMatch = s.match(/-----END ([^-]+)-----/)
+  if (headerMatch && footerMatch) {
+    const header = headerMatch[0]
+    const footer = footerMatch[0]
+    // Extract only the base64 characters between the markers
+    const body = s
+      .slice(s.indexOf(header) + header.length, s.lastIndexOf(footer))
+      .replace(/\s+/g, '')
+    const lines = body.match(/.{1,64}/g) ?? []
+    s = `${header}\n${lines.join('\n')}\n${footer}`
+  }
+
+  return s
+}
+
 function getSignedHeaders(auth: KalshiAuth, method: string, urlPath: string): Record<string, string> {
   const timestampMs = Date.now()
   const msgToSign = `${timestampMs}${method.toUpperCase()}${urlPath}`
 
-  // Normalise the key: replace literal \n sequences with real newlines
-  // (can happen when the PEM is stored in JSON with escaped newlines)
-  // Also handles both PKCS#1 (-----BEGIN RSA PRIVATE KEY-----) and PKCS#8
-  const pemNormalized = auth.privateKey.replace(/\\n/g, '\n')
+  const pemNormalized = normalizePem(auth.privateKey)
   const privateKey = createPrivateKey(pemNormalized)
 
   const signer = createSign('SHA256')

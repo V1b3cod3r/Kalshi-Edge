@@ -60,6 +60,17 @@ export interface AppSettings {
   max_position_pct: number     // default 0.05
   max_corr_exposure_pct: number // default 0.15
   default_kelly_fraction: 'low' | 'medium' | 'high'
+  use_extended_thinking: boolean // enables Claude extended thinking for deep analysis (slower but better)
+}
+
+export interface CalibrationStats {
+  total_predictions: number
+  resolved_predictions: number
+  overall_accuracy: number      // fraction where bet direction matched outcome
+  brier_score: number           // lower is better; 0.25 = random; 0 = perfect
+  yes_bias: number              // positive = over-predicts YES; negative = over-predicts NO
+  recent_accuracy: number       // accuracy on last 10 resolved predictions
+  by_category: Record<string, { predictions: number; accuracy: number; brier: number }>
 }
 
 export interface MarketInput {

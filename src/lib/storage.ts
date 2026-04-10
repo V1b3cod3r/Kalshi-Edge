@@ -1,6 +1,6 @@
 import fs from 'fs'
 import path from 'path'
-import { MacroView, SessionState, AppSettings, Prediction } from './types'
+import { MacroView, SessionState, AppSettings, Prediction, CalibrationStats } from './types'
 
 // Support DATA_DIR env var for cloud deployments (Railway mounts a volume here)
 const DATA_DIR = process.env.DATA_DIR ?? path.join(process.cwd(), 'data')
@@ -30,6 +30,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   max_position_pct: 0.05,
   max_corr_exposure_pct: 0.15,
   default_kelly_fraction: 'medium',
+  use_extended_thinking: false,
 }
 
 function ensureDataDir() {
@@ -156,6 +157,82 @@ export function resolvePrediction(id: string, outcome: 'YES' | 'NO'): Prediction
 export function deletePrediction(id: string): void {
   const predictions = getPredictions()
   savePredictions(predictions.filter((p) => p.id !== id))
+}
+
+// Calibration stats — computed on the fly from resolved predictions
+export function getCalibrationStats(): CalibrationStats {
+  const predictions = getPredictions()
+  const resolved = predictions.filter((p) => p.outcome !== undefined)
+
+  const empty: CalibrationStats = {
+    total_predictions: predictions.length,
+    resolved_predictions: resolved.length,
+    overall_accuracy: 0,
+    brier_score: 0.25,
+    yes_bias: 0,
+    recent_accuracy: 0,
+    by_category: {},
+  }
+
+  if (resolved.length === 0) return empty
+
+  // Overall accuracy: direction correct (direction === outcome)
+  const correct = resolved.filter((p) => p.direction === p.outcome)
+  const overall_accuracy = correct.length / resolved.length
+
+  // Brier score: (predicted_prob_for_yes - actual_yes_outcome)^2
+  // predicted_prob_for_yes = p.predicted_probability (always the P(YES))
+  // actual = 1 if outcome=YES, 0 if outcome=NO
+  const brierSum = resolved.reduce((sum, p) => {
+    const actual = p.outcome === 'YES' ? 1 : 0
+    return sum + Math.pow(p.predicted_probability - actual, 2)
+  }, 0)
+  const brier_score = brierSum / resolved.length
+
+  // YES bias: avg predicted_probability among NO outcomes minus 0.5
+  // Positive = model over-predicts YES (assigns high P(YES) even when NO wins)
+  const noOutcomes = resolved.filter((p) => p.outcome === 'NO')
+  const yesOutcomes = resolved.filter((p) => p.outcome === 'YES')
+  let yes_bias = 0
+  if (noOutcomes.length > 0 && yesOutcomes.length > 0) {
+    const avgProbWhenNo = noOutcomes.reduce((s, p) => s + p.predicted_probability, 0) / noOutcomes.length
+    const avgProbWhenYes = yesOutcomes.reduce((s, p) => s + p.predicted_probability, 0) / yesOutcomes.length
+    // If well calibrated: avgProbWhenYes > 0.5, avgProbWhenNo < 0.5
+    // Bias = how much higher avgProbWhenNo is than expected (0 = perfect, >0 = over-predicts YES)
+    yes_bias = avgProbWhenNo - (1 - overall_accuracy)
+  }
+
+  // Recent accuracy (last 10 resolved)
+  const recent10 = resolved.slice(0, 10)
+  const recent_accuracy = recent10.length > 0
+    ? recent10.filter((p) => p.direction === p.outcome).length / recent10.length
+    : 0
+
+  // Per-category stats
+  const by_category: CalibrationStats['by_category'] = {}
+  for (const p of resolved) {
+    const cat = p.category || 'Other/General'
+    if (!by_category[cat]) by_category[cat] = { predictions: 0, accuracy: 0, brier: 0 }
+    by_category[cat].predictions++
+    if (p.direction === p.outcome) by_category[cat].accuracy++
+    const actual = p.outcome === 'YES' ? 1 : 0
+    by_category[cat].brier += Math.pow(p.predicted_probability - actual, 2)
+  }
+  for (const cat of Object.keys(by_category)) {
+    const d = by_category[cat]
+    d.brier = d.brier / d.predictions
+    d.accuracy = d.accuracy / d.predictions
+  }
+
+  return {
+    total_predictions: predictions.length,
+    resolved_predictions: resolved.length,
+    overall_accuracy,
+    brier_score,
+    yes_bias,
+    recent_accuracy,
+    by_category,
+  }
 }
 
 // Settings

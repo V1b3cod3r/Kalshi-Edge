@@ -1,8 +1,43 @@
-import { MacroView, SessionState, MarketInput } from './types'
+import { MacroView, SessionState, MarketInput, CalibrationStats } from './types'
 import { Signal, formatSignals } from './signals'
 import { WebContext, formatWebContext } from './search'
 
-export function buildAnalysisSystemPrompt(): string {
+export function buildAnalysisSystemPrompt(calibration?: CalibrationStats): string {
+  // Build calibration section only if we have meaningful resolved data
+  let calibrationSection = ''
+  if (calibration && calibration.resolved_predictions >= 5) {
+    const biasNote = calibration.yes_bias > 0.04
+      ? `+${(calibration.yes_bias * 100).toFixed(1)}% — OVER-predicting YES. Skew estimates more skeptical of YES.`
+      : calibration.yes_bias < -0.04
+      ? `${(calibration.yes_bias * 100).toFixed(1)}% — OVER-predicting NO. Skew estimates more skeptical of NO.`
+      : 'minimal — well calibrated.'
+    const brierNote = calibration.brier_score > 0.22
+      ? 'ABOVE 0.22 — widen confidence intervals; avoid probabilities outside 15–85% unless evidence is very strong.'
+      : calibration.brier_score < 0.15
+      ? 'excellent — maintain current calibration approach.'
+      : 'acceptable.'
+    const catLines = Object.entries(calibration.by_category)
+      .sort((a, b) => b[1].predictions - a[1].predictions)
+      .map(([cat, s]) => `  - ${cat}: ${s.predictions} preds, ${(s.accuracy * 100).toFixed(0)}% accuracy, Brier ${s.brier.toFixed(3)}`)
+      .join('\n')
+    calibrationSection = `
+
+---
+
+## Your Prediction Track Record
+
+Use this empirical data to calibrate your probability estimates for this session:
+
+- **Resolved predictions**: ${calibration.resolved_predictions} (of ${calibration.total_predictions} total logged)
+- **Overall accuracy**: ${(calibration.overall_accuracy * 100).toFixed(0)}% correct direction
+- **Brier score**: ${calibration.brier_score.toFixed(3)} — ${brierNote}
+- **YES bias**: ${biasNote}
+- **Recent accuracy (last 10)**: ${(calibration.recent_accuracy * 100).toFixed(0)}%
+${catLines ? `\nCategory breakdown:\n${catLines}` : ''}
+
+**Instruction**: Adjust your probability estimates based on this track record. If accuracy in a category is below 55%, increase uncertainty in that category and widen confidence ranges.`
+  }
+
   return `You are **Kalshi Edge**, an expert prediction market trader specializing in finding and exploiting pricing inefficiencies on Kalshi. Your goal is to identify markets where the true probability of an outcome differs meaningfully from the implied probability in the current market price, then recommend trades sized by the Kelly Criterion to maximize long-run bankroll growth.
 
 ---
@@ -179,11 +214,27 @@ If no edge exists: output NO BET — market appears fairly priced with brief rea
 - **Flag uncertainty**: If you don't have enough information to estimate confidently, say so explicitly.
 - **Avoid recency bias**: Anchor to base rates.
 - **Avoid anchoring to market price**: The market price is a hypothesis to test, not a prior.
-- **Be concise**: Give the key evidence points only. Quality over quantity.`
+- **Be concise**: Give the key evidence points only. Quality over quantity.${calibrationSection}`
 }
 
-export function buildScannerSystemPrompt(): string {
-  return `You are **Kalshi Edge** operating in **SCANNER MODE**. Screen a batch of Kalshi prediction markets and identify those with exploitable pricing inefficiencies.
+export function buildScannerSystemPrompt(calibration?: CalibrationStats): string {
+  let calibrationSection = ''
+  if (calibration && calibration.resolved_predictions >= 5) {
+    const biasNote = calibration.yes_bias > 0.04
+      ? `Over-predicting YES by ~${(calibration.yes_bias * 100).toFixed(0)}pp — apply extra skepticism to YES opportunities.`
+      : calibration.yes_bias < -0.04
+      ? `Over-predicting NO by ~${(Math.abs(calibration.yes_bias) * 100).toFixed(0)}pp — apply extra skepticism to NO opportunities.`
+      : 'Well calibrated on direction.'
+    calibrationSection = `
+
+## Your Track Record (${calibration.resolved_predictions} resolved)
+- Accuracy: ${(calibration.overall_accuracy * 100).toFixed(0)}% · Brier: ${calibration.brier_score.toFixed(3)} · Bias: ${biasNote}
+- Recent (last 10): ${(calibration.recent_accuracy * 100).toFixed(0)}%
+Use this to calibrate confidence and edge estimates — if a category shows poor accuracy, require higher edge threshold before flagging BET.
+`
+  }
+
+  return `You are **Kalshi Edge** operating in **SCANNER MODE**. Screen a batch of Kalshi prediction markets and identify those with exploitable pricing inefficiencies.${calibrationSection}
 
 ## Your Task
 

@@ -215,6 +215,93 @@ async function fedSignals(): Promise<Signal[]> {
   return signals
 }
 
+/**
+ * CME FedWatch probability — derives market-implied P(cut) from Fed Funds futures
+ * using the same weighted-average methodology CME publishes on FedWatch Tool.
+ *
+ * Formula: implied_month_avg = (currentRate × days_before + newRate × days_after) / totalDays
+ * Solve for newRate, then P(cut) = (currentRate − newRate) / 0.25
+ */
+async function fedWatchSignal(): Promise<Signal[]> {
+  // 2026 FOMC decision dates (last day of each 2-day meeting)
+  const FOMC_DATES = [
+    '2026-01-29', '2026-03-19', '2026-04-30',
+    '2026-06-18', '2026-07-30', '2026-09-17',
+    '2026-10-29', '2026-12-10',
+  ]
+
+  // Month-code mapping for CME futures tickers (Jan=F ... Dec=Z)
+  const MONTH_CODES = 'FGHJKMNQUVXZ'
+
+  const today = new Date()
+  const upcomingMeetings = FOMC_DATES
+    .map((d) => new Date(d))
+    .filter((d) => d >= today)
+    .sort((a, b) => a.getTime() - b.getTime())
+
+  if (upcomingMeetings.length === 0) return []
+
+  const nextMeeting = upcomingMeetings[0]
+  const meetingMonth = nextMeeting.getMonth()   // 0-indexed
+  const meetingYear = nextMeeting.getFullYear()
+  const meetingDay = nextMeeting.getDate()
+  const daysInMeetingMonth = new Date(meetingYear, meetingMonth + 1, 0).getDate()
+  const daysAfterMeeting = daysInMeetingMonth - meetingDay
+
+  // If the meeting falls in the last week of the month (little post-meeting time),
+  // use next month's futures for a cleaner signal
+  let targetMonth = meetingMonth
+  let targetYear = meetingYear
+  if (daysAfterMeeting < 7) {
+    targetMonth = (meetingMonth + 1) % 12
+    if (targetMonth === 0) targetYear++
+  }
+
+  const monthCode = MONTH_CODES[targetMonth]
+  const yearCode = String(targetYear).slice(-2)
+  const futuresTicker = `ZQ${monthCode}${yearCode}.CBT`
+
+  const [futuresPrice, sofr] = await Promise.all([
+    yahooPrice(futuresTicker),
+    yahooPrice('%5ESOFR'),
+  ])
+
+  if (!futuresPrice || !sofr) return []
+
+  const currentRate = sofr
+  const impliedMonthAvg = 100 - futuresPrice
+
+  let pCut: number
+
+  if (targetMonth === meetingMonth) {
+    // Delivery month contains the meeting — apply CME weighted formula
+    const totalDays = daysInMeetingMonth
+    const daysBefore = meetingDay
+    const daysAfter = totalDays - daysBefore
+    if (daysAfter <= 0) {
+      pCut = 0
+    } else {
+      // Solve: impliedMonthAvg = (currentRate * daysBefore + newRate * daysAfter) / totalDays
+      const newRate = (impliedMonthAvg * totalDays - currentRate * daysBefore) / daysAfter
+      pCut = (currentRate - newRate) / 0.25
+    }
+  } else {
+    // Whole delivery month is post-meeting — simple difference
+    pCut = (currentRate - impliedMonthAvg) / 0.25
+  }
+
+  pCut = Math.max(0, Math.min(1, pCut))
+
+  const meetingStr = nextMeeting.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+
+  return [{
+    label: 'CME FedWatch P(≥25bps cut)',
+    value: `${(pCut * 100).toFixed(0)}%`,
+    note: `${meetingStr} FOMC · implied rate ${impliedMonthAvg.toFixed(2)}% vs current ${currentRate.toFixed(2)}% · futures: ${futuresTicker}`,
+    source: 'CME Fed Funds futures via Yahoo Finance',
+  }]
+}
+
 async function cpiSignals(): Promise<Signal[]> {
   const signals: Signal[] = []
   // BLS v1 API — no key required, 10 req/day limit
@@ -225,7 +312,7 @@ async function cpiSignals(): Promise<Signal[]> {
     fetchJson('https://api.bls.gov/publicAPI/v1/timeseries/data/CUUR0000SA0L1E'),
   ])
 
-  const parseRecentCPI = (data: any): { month: string; yoy: string; mom: string } | null => {
+  const parseCPI = (data: any) => {
     const series = data?.Results?.series?.[0]?.data
     if (!series || series.length < 13) return null
     const latest = series[0]
@@ -233,25 +320,45 @@ async function cpiSignals(): Promise<Signal[]> {
     const prevYear = series[12]
     const yoy = (((latest.value - prevYear.value) / prevYear.value) * 100).toFixed(1)
     const mom = (((latest.value - prevMonth.value) / prevMonth.value) * 100).toFixed(2)
-    return { month: `${latest.periodName} ${latest.year}`, yoy, mom }
+
+    // Historical base rates: compute YoY for each of the last 12 months (need 24 data points)
+    let baseRateNote = ''
+    if (series.length >= 24) {
+      const yoyHistory: number[] = []
+      for (let i = 0; i < 12; i++) {
+        if (series[i + 12]) {
+          yoyHistory.push(((series[i].value - series[i + 12].value) / series[i + 12].value) * 100)
+        }
+      }
+      if (yoyHistory.length >= 3) {
+        const above3 = yoyHistory.filter((v) => v > 3).length
+        const above2 = yoyHistory.filter((v) => v > 2).length
+        // 3-month trend using last 3 values (most recent first)
+        const t = yoyHistory.slice(0, 3)
+        const trend = t[0] > t[2] + 0.1 ? 'rising' : t[0] < t[2] - 0.1 ? 'falling' : 'flat'
+        baseRateNote = ` · past 12mo: above 3% in ${above3}/12, above 2% in ${above2}/12, trend: ${trend}`
+      }
+    }
+
+    return { month: `${latest.periodName} ${latest.year}`, yoy, mom, baseRateNote }
   }
 
-  const h = parseRecentCPI(headline)
+  const h = parseCPI(headline)
   if (h) {
     signals.push({
       label: 'Headline CPI (YoY)',
       value: `${h.yoy}%`,
-      note: `${h.month} · month-over-month: ${Number(h.mom) >= 0 ? '+' : ''}${h.mom}%`,
+      note: `${h.month} · MoM: ${Number(h.mom) >= 0 ? '+' : ''}${h.mom}%${h.baseRateNote}`,
       source: 'BLS (CUUR0000SA0)',
     })
   }
 
-  const c = parseRecentCPI(core)
+  const c = parseCPI(core)
   if (c) {
     signals.push({
       label: 'Core CPI (YoY, ex food & energy)',
       value: `${c.yoy}%`,
-      note: `${c.month} · month-over-month: ${Number(c.mom) >= 0 ? '+' : ''}${c.mom}%`,
+      note: `${c.month} · MoM: ${Number(c.mom) >= 0 ? '+' : ''}${c.mom}%${c.baseRateNote}`,
       source: 'BLS (CUUR0000SA0L1E)',
     })
   }
@@ -268,14 +375,38 @@ async function jobsSignals(): Promise<Signal[]> {
     fetchJson('https://api.bls.gov/publicAPI/v1/timeseries/data/LNS14000000'),
   ])
 
-  const latestPayroll = payrolls?.Results?.series?.[0]?.data?.[0]
-  const prevPayroll = payrolls?.Results?.series?.[0]?.data?.[1]
-  if (latestPayroll && prevPayroll) {
-    const added = ((latestPayroll.value - prevPayroll.value) * 1000).toLocaleString()
+  const payrollData: any[] = payrolls?.Results?.series?.[0]?.data ?? []
+  if (payrollData.length >= 2) {
+    const latest = payrollData[0]
+    const prev = payrollData[1]
+    const added = Math.round((latest.value - prev.value) * 1000)
+    const sign = added >= 0 ? '+' : ''
+
+    // Historical base rates: monthly gains for last 12 months
+    let baseRateNote = ''
+    if (payrollData.length >= 13) {
+      const monthlyGains: number[] = []
+      for (let i = 0; i < 12; i++) {
+        if (payrollData[i + 1]) {
+          monthlyGains.push(Math.round((payrollData[i].value - payrollData[i + 1].value) * 1000))
+        }
+      }
+      if (monthlyGains.length >= 3) {
+        const above150k = monthlyGains.filter((v) => v > 150000).length
+        const above200k = monthlyGains.filter((v) => v > 200000).length
+        const avg = Math.round(monthlyGains.reduce((a, b) => a + b, 0) / monthlyGains.length)
+        // Trend: compare first 3 months to last 3 months
+        const recent3 = monthlyGains.slice(0, 3).reduce((a, b) => a + b, 0) / 3
+        const older3 = monthlyGains.slice(9, 12).reduce((a, b) => a + b, 0) / 3
+        const trend = recent3 > older3 + 20000 ? 'accelerating' : recent3 < older3 - 20000 ? 'decelerating' : 'stable'
+        baseRateNote = ` · past 12mo avg: ${(avg / 1000).toFixed(0)}k/mo, above 150k: ${above150k}/12, above 200k: ${above200k}/12, trend: ${trend}`
+      }
+    }
+
     signals.push({
       label: 'Nonfarm payrolls',
-      value: `+${added} jobs`,
-      note: `${latestPayroll.periodName} ${latestPayroll.year}`,
+      value: `${sign}${(added / 1000).toFixed(0)}k jobs`,
+      note: `${latest.periodName} ${latest.year}${baseRateNote}`,
       source: 'BLS (CES0000000001)',
     })
   }
@@ -398,12 +529,12 @@ export async function getSignalsForMarket(
 
   try {
     if (FED_SERIES.has(series)) {
-      const [fed, tsys, cal] = await Promise.all([fedSignals(), treasurySignals(), getCalendarSignals(['fed'])])
-      return [...fed, ...tsys, ...cal]
+      const [fed, fw, tsys, cal] = await Promise.all([fedSignals(), fedWatchSignal(), treasurySignals(), getCalendarSignals(['fed'])])
+      return [...fed, ...fw, ...tsys, ...cal]
     }
     if (CPI_SERIES.has(series)) {
-      const [cpi, fed, tsys, cal] = await Promise.all([cpiSignals(), fedSignals(), treasurySignals(), getCalendarSignals(['cpi', 'pce'])])
-      return [...cpi, ...fed, ...tsys, ...cal]
+      const [cpi, fed, fw, tsys, cal] = await Promise.all([cpiSignals(), fedSignals(), fedWatchSignal(), treasurySignals(), getCalendarSignals(['cpi', 'pce'])])
+      return [...cpi, ...fed, ...fw, ...tsys, ...cal]
     }
     if (JOBS_SERIES.has(series)) {
       const [jobs, tsys, cal] = await Promise.all([jobsSignals(), treasurySignals(), getCalendarSignals(['jobs'])])

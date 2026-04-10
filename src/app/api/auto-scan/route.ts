@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getViews, getSession, getSettings } from '@/lib/storage'
+import { getViews, getSession, getSettings, getCalibrationStats, createPrediction } from '@/lib/storage'
 import { buildScannerSystemPrompt, buildScannerUserMessage } from '@/lib/prompts'
 import { callClaude } from '@/lib/claude'
 import { fetchMarkets } from '@/lib/kalshi'
@@ -237,8 +237,9 @@ export async function POST(req: NextRequest) {
     // Step 4: Run Claude scanner with live signals + web context injected
     const views = getViews()
     const session = getSession()
+    const calibration = getCalibrationStats()
 
-    const systemPrompt = buildScannerSystemPrompt()
+    const systemPrompt = buildScannerSystemPrompt(calibration)
     const userMessage = buildScannerUserMessage(normalized, views, session, signalMap, webContextMap)
 
     const rawResult = await callClaude(settings.anthropic_api_key, systemPrompt, userMessage)
@@ -275,6 +276,28 @@ export async function POST(req: NextRequest) {
         resolution_date: market?.resolution_date ?? null,
       }
     })
+
+    // Auto-save scanner opportunities to calibration log (best-effort)
+    try {
+      for (const opp of opportunities) {
+        if (!opp.ticker || !opp.direction || opp.direction === 'NO BET') continue
+        const market = marketByTicker.get(opp.ticker)
+        if (!market) continue
+        createPrediction({
+          market_title: opp.title || market.title,
+          ticker: opp.ticker,
+          category: market.category ?? 'Other/General',
+          predicted_probability: (opp.my_estimate_pct ?? 50) / 100,
+          direction: opp.direction as 'YES' | 'NO',
+          market_price: market.yes_price,
+          edge_pct: opp.edge_pct ?? 0,
+          resolution_date: market.resolution_date,
+          source: 'scanner',
+        })
+      }
+    } catch {
+      // prediction logging is non-critical
+    }
 
     return NextResponse.json({
       opportunities,

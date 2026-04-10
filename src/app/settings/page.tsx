@@ -49,6 +49,7 @@ export default function SettingsPage() {
   const [maxPosition, setMaxPosition] = useState(5)
   const [maxCorrExposure, setMaxCorrExposure] = useState(15)
   const [kellyFraction, setKellyFraction] = useState<'low' | 'medium' | 'high'>('medium')
+  const [useExtendedThinking, setUseExtendedThinking] = useState(false)
 
   // Session state
   const [bankroll, setBankroll] = useState(10000)
@@ -87,6 +88,7 @@ export default function SettingsPage() {
       setMaxPosition(Math.round((s.max_position_pct || 0.05) * 100))
       setMaxCorrExposure(Math.round((s.max_corr_exposure_pct || 0.15) * 100))
       setKellyFraction(s.default_kelly_fraction || 'medium')
+      setUseExtendedThinking(s.use_extended_thinking ?? false)
 
       const sess = sessionData.session || {}
       setSession(sess)
@@ -112,6 +114,7 @@ export default function SettingsPage() {
         max_position_pct: maxPosition / 100,
         max_corr_exposure_pct: maxCorrExposure / 100,
         default_kelly_fraction: kellyFraction,
+        use_extended_thinking: useExtendedThinking,
       }
       if (anthropicKeyInput) body.anthropic_api_key = anthropicKeyInput
       if (kalshiKeyInput) body.kalshi_api_key = kalshiKeyInput
@@ -507,6 +510,44 @@ export default function SettingsPage() {
                 </button>
               ))}
             </div>
+          </div>
+
+          {/* Extended Thinking */}
+          <div>
+            <div className="flex items-center justify-between">
+              <div>
+                <label style={{ ...labelStyle, marginBottom: 2 }}>Extended Thinking Mode</label>
+                <p className="text-xs" style={{ color: '#64748b' }}>
+                  Uses Claude's deep reasoning for market analysis. Significantly more accurate but 3–5× slower. Recommended for high-value decisions only.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setUseExtendedThinking(!useExtendedThinking)}
+                className="relative ml-4 flex-shrink-0 rounded-full transition-colors"
+                style={{
+                  width: '44px',
+                  height: '24px',
+                  backgroundColor: useExtendedThinking ? '#6366f1' : '#2a2a3e',
+                }}
+              >
+                <span
+                  className="absolute rounded-full transition-transform"
+                  style={{
+                    width: '18px',
+                    height: '18px',
+                    top: '3px',
+                    left: useExtendedThinking ? '23px' : '3px',
+                    backgroundColor: '#f1f5f9',
+                  }}
+                />
+              </button>
+            </div>
+            {useExtendedThinking && (
+              <p className="text-xs mt-2 px-3 py-1.5 rounded" style={{ color: '#a5b4fc', backgroundColor: '#6366f110' }}>
+                Extended thinking enabled — each analysis will use up to 8,000 thinking tokens before responding.
+              </p>
+            )}
           </div>
 
           <button

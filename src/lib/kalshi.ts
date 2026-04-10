@@ -18,14 +18,24 @@ function normalizePem(raw: string): string {
   // 3. Trim surrounding whitespace
   s = s.trim()
 
-  // 4. Reconstruct PEM with standard 64-char line wrapping so OpenSSL can parse it
+  // 4. If there are no PEM headers, the key was saved as raw base64 DER.
+  //    Detect by checking for the -----BEGIN marker.
+  if (!s.includes('-----BEGIN')) {
+    // Strip all whitespace to get pure base64, then wrap with PKCS#1 headers.
+    // MIIEpA... prefix indicates PKCS#1 RSA private key; MIIE4Q/MIIEvA = also PKCS#1.
+    // Anything without headers is treated as PKCS#1 (most common from Kalshi).
+    const b64 = s.replace(/\s+/g, '')
+    const lines = b64.match(/.{1,64}/g) ?? []
+    return `-----BEGIN RSA PRIVATE KEY-----\n${lines.join('\n')}\n-----END RSA PRIVATE KEY-----`
+  }
+
+  // 5. Reconstruct PEM with standard 64-char line wrapping so OpenSSL can parse it
   //    regardless of how the base64 body was originally line-wrapped.
   const headerMatch = s.match(/-----BEGIN ([^-]+)-----/)
   const footerMatch = s.match(/-----END ([^-]+)-----/)
   if (headerMatch && footerMatch) {
     const header = headerMatch[0]
     const footer = footerMatch[0]
-    // Extract only the base64 characters between the markers
     const body = s
       .slice(s.indexOf(header) + header.length, s.lastIndexOf(footer))
       .replace(/\s+/g, '')

@@ -73,12 +73,25 @@ export async function GET(req: Request) {
       const first40 = raw.slice(0, 40).replace(/\n/g, '↵').replace(/\r/g, '↩')
       const last40 = raw.slice(-40).replace(/\n/g, '↵').replace(/\r/g, '↩')
 
-      // Try to parse the key and report the result
+      // Try to parse the key using the same normalizePem logic as kalshi.ts
       let parseResult = 'not attempted'
       try {
         const { createPrivateKey } = await import('crypto')
-        let normalized = raw.replace(/\\n/g, '\n').replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim()
-        createPrivateKey(normalized)
+        let s = raw.replace(/\\n/g, '\n').replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim()
+        if (!s.includes('-----BEGIN')) {
+          const b64 = s.replace(/\s+/g, '')
+          const lines = b64.match(/.{1,64}/g) ?? []
+          s = `-----BEGIN RSA PRIVATE KEY-----\n${lines.join('\n')}\n-----END RSA PRIVATE KEY-----`
+        } else {
+          const hm = s.match(/-----BEGIN ([^-]+)-----/)
+          const fm = s.match(/-----END ([^-]+)-----/)
+          if (hm && fm) {
+            const body = s.slice(s.indexOf(hm[0]) + hm[0].length, s.lastIndexOf(fm[0])).replace(/\s+/g, '')
+            const lines = body.match(/.{1,64}/g) ?? []
+            s = `${hm[0]}\n${lines.join('\n')}\n${fm[0]}`
+          }
+        }
+        createPrivateKey(s)
         parseResult = 'SUCCESS'
       } catch (e: any) {
         parseResult = `FAIL: ${e.message}`

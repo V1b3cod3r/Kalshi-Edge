@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { getSettings } from '@/lib/storage'
 import { getSignalsForMarket } from '@/lib/signals'
+import { getMarketWebContext, formatWebContext } from '@/lib/search'
 
 const KALSHI_BASE_URL = 'https://api.elections.kalshi.com/trade-api/v2'
 
@@ -24,6 +25,24 @@ export async function GET(req: Request) {
     const series = url.searchParams.get('series') ?? ticker.split('-')[0]
     const signals = await getSignalsForMarket(ticker, series)
     return NextResponse.json({ ticker, series, signals, count: signals.length })
+  }
+
+  // Web context test — no Kalshi key needed
+  // Usage: /api/debug?mode=webcontext&q=Will+CPI+exceed+3%25+in+April
+  if (mode === 'webcontext') {
+    const settings = getSettings()
+    const q = url.searchParams.get('q') ?? 'S&P 500 weekly close'
+    const ctx = await getMarketWebContext(q, settings.tavily_api_key || undefined)
+    const formatted = formatWebContext(ctx)
+    return NextResponse.json({
+      query: ctx.query,
+      tavilyAnswer: ctx.tavilyAnswer ?? null,
+      tavilyWorking: !!ctx.tavilyAnswer,
+      googleNewsCount: ctx.news.filter(n => !ctx.tavilyAnswer || true).length,
+      totalNewsItems: ctx.news.length,
+      news: ctx.news,
+      formattedPromptSnippet: formatted.slice(0, 800),
+    })
   }
 
   const settings = getSettings()

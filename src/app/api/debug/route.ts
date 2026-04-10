@@ -36,12 +36,13 @@ export async function GET(req: Request) {
     const formatted = formatWebContext(ctx)
     return NextResponse.json({
       query: ctx.query,
-      tavilyAnswer: ctx.tavilyAnswer ?? null,
       tavilyWorking: !!ctx.tavilyAnswer,
-      googleNewsCount: ctx.news.filter(n => !ctx.tavilyAnswer || true).length,
+      tavilyAnswer: ctx.tavilyAnswer ?? null,
+      polymarketCount: ctx.polymarket?.length ?? 0,
+      polymarket: ctx.polymarket ?? [],
       totalNewsItems: ctx.news.length,
       news: ctx.news,
-      formattedPromptSnippet: formatted.slice(0, 800),
+      formattedPromptSnippet: formatted.slice(0, 1200),
     })
   }
 

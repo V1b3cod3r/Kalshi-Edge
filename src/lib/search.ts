@@ -4,8 +4,9 @@
  * Sources:
  * - Google News RSS (free, no key) — recent headlines for any query
  * - Tavily AI Search (free tier: 1000/month) — deeper search with AI summary
+ * - Polymarket (free public API) — cross-market price reference
  *
- * Both are best-effort: failures are silent and never block analysis.
+ * All sources are best-effort: failures are silent and never block analysis.
  */
 
 export interface NewsItem {
@@ -15,10 +16,18 @@ export interface NewsItem {
   source: string
 }
 
+export interface PolymarketRef {
+  question: string
+  yesPrice: number   // cents (1–99)
+  noPrice: number
+  volume: string     // e.g. "$240k"
+}
+
 export interface WebContext {
   query: string
   news: NewsItem[]
   tavilyAnswer?: string
+  polymarket?: PolymarketRef[]
 }
 
 const TIMEOUT_MS = 8000
@@ -127,11 +136,47 @@ export async function searchTavily(
   }
 }
 
+// ── Polymarket cross-reference ───────────────────────────────────────────────
+
+export async function searchPolymarket(query: string, maxResults = 2): Promise<PolymarketRef[]> {
+  const url = `https://gamma-api.polymarket.com/markets?search=${encodeURIComponent(query)}&limit=5&active=true&closed=false`
+  const res = await fetchWithTimeout(url, { headers: { 'User-Agent': 'Mozilla/5.0' } })
+  if (!res) return []
+
+  const data = await res.json().catch(() => null)
+  if (!data) return []
+
+  const markets: any[] = Array.isArray(data) ? data : (data.data ?? data.markets ?? [])
+  const refs: PolymarketRef[] = []
+
+  for (const m of markets) {
+    if (!m.question || !m.outcomePrices) continue
+    let prices: string[]
+    try {
+      prices = Array.isArray(m.outcomePrices) ? m.outcomePrices : JSON.parse(m.outcomePrices)
+    } catch {
+      continue
+    }
+    if (prices.length < 2) continue
+    const yes = Math.round(parseFloat(prices[0]) * 100)
+    const no = Math.round(parseFloat(prices[1]) * 100)
+    if (yes <= 0 || yes >= 100) continue  // skip unpriced/resolved markets
+
+    const volNum = Number(m.volume ?? 0)
+    const volume = volNum >= 1000 ? `$${(volNum / 1000).toFixed(0)}k` : volNum > 0 ? `$${volNum.toFixed(0)}` : ''
+
+    refs.push({ question: m.question, yesPrice: yes, noPrice: no, volume })
+    if (refs.length >= maxResults) break
+  }
+
+  return refs
+}
+
 // ── Combined context fetcher ─────────────────────────────────────────────────
 
 /**
  * Fetch web context for a single market.
- * Always runs Google News; runs Tavily only if apiKey provided.
+ * Always runs Google News + Polymarket; runs Tavily only if apiKey provided.
  */
 export async function getMarketWebContext(
   marketTitle: string,
@@ -140,9 +185,10 @@ export async function getMarketWebContext(
   // Trim query to ~100 chars — news APIs work best with concise queries
   const query = marketTitle.replace(/^Will /, '').replace(/\?$/, '').trim().slice(0, 120)
 
-  const [googleNews, tavilyResult] = await Promise.all([
+  const [googleNews, tavilyResult, polymarket] = await Promise.all([
     searchGoogleNews(query, 6),
     tavilyApiKey ? searchTavily(query, tavilyApiKey, 5) : Promise.resolve({ query, news: [] as NewsItem[] }),
+    searchPolymarket(query, 2),
   ])
 
   // Merge: Tavily first (higher quality), then Google News to fill remaining slots
@@ -161,6 +207,7 @@ export async function getMarketWebContext(
     query,
     news: merged,
     tavilyAnswer: (tavilyResult as WebContext).tavilyAnswer,
+    polymarket: polymarket.length > 0 ? polymarket : undefined,
   }
 }
 
@@ -201,12 +248,20 @@ export async function getWebContextForMarkets(
 // ── Prompt formatter ─────────────────────────────────────────────────────────
 
 export function formatWebContext(ctx: WebContext): string {
-  if (ctx.news.length === 0 && !ctx.tavilyAnswer) return ''
+  if (ctx.news.length === 0 && !ctx.tavilyAnswer && !ctx.polymarket?.length) return ''
 
   const lines: string[] = [`Web context (query: "${ctx.query}"):`]
 
   if (ctx.tavilyAnswer) {
     lines.push(`  AI summary: ${ctx.tavilyAnswer}`)
+  }
+
+  if (ctx.polymarket && ctx.polymarket.length > 0) {
+    lines.push(`  Polymarket (cross-market reference):`)
+    for (const p of ctx.polymarket) {
+      const vol = p.volume ? ` · vol ${p.volume}` : ''
+      lines.push(`    • "${p.question}" — YES ${p.yesPrice}¢ / NO ${p.noPrice}¢${vol}`)
+    }
   }
 
   for (const item of ctx.news) {

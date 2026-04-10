@@ -152,6 +152,32 @@ async function nasdaqSignals(marketTicker?: string): Promise<Signal[]> {
   return signals
 }
 
+async function treasurySignals(): Promise<Signal[]> {
+  const signals: Signal[] = []
+  // ^TNX = 10-year yield, ^FVX = 5-year yield, ^IRX = 13-week T-bill
+  const [t10, t5, t3m] = await Promise.all([
+    yahooPrice('%5ETNX'),
+    yahooPrice('%5EFVX'),
+    yahooPrice('%5EIRX'),
+  ])
+  if (t10 && t3m) {
+    const spread = (t10 - t3m).toFixed(2)
+    const inverted = t3m > t10
+    signals.push({
+      label: '10yr Treasury yield',
+      value: `${t10.toFixed(2)}%`,
+      note: `3m/10yr spread: ${Number(spread) >= 0 ? '+' : ''}${spread}% (${inverted ? 'INVERTED — recession signal' : 'normal curve'})`,
+      source: 'Yahoo Finance (^TNX / ^IRX)',
+    })
+  } else if (t10) {
+    signals.push({ label: '10yr Treasury yield', value: `${t10.toFixed(2)}%`, note: '', source: 'Yahoo Finance (^TNX)' })
+  }
+  if (t5) {
+    signals.push({ label: '5yr Treasury yield', value: `${t5.toFixed(2)}%`, note: '', source: 'Yahoo Finance (^FVX)' })
+  }
+  return signals
+}
+
 async function fedSignals(): Promise<Signal[]> {
   const signals: Signal[] = []
   // Fed Funds futures: price = 100 - expected average fed funds rate
@@ -306,6 +332,19 @@ async function cryptoSignals(symbol: string): Promise<Signal[]> {
   return signals
 }
 
+async function dxySignal(): Promise<Signal[]> {
+  const data = await yahooOHLC('DX-Y.NYB', '10d') // US Dollar Index
+  if (!data || data.closes.length < 2) return []
+  const curr = data.closes.at(-1)!
+  const prev = data.closes.at(-2)!
+  return [{
+    label: 'US Dollar Index (DXY)',
+    value: curr.toFixed(2),
+    note: `${Number(pctChange(prev, curr)) >= 0 ? '+' : ''}${pctChange(prev, curr)}% yesterday · strength = tariff pressure on trading partners`,
+    source: 'ICE via Yahoo Finance (DX-Y.NYB)',
+  }]
+}
+
 async function oilSignals(): Promise<Signal[]> {
   const signals: Signal[] = []
   const data = await yahooOHLC('CL%3DF', '10d') // WTI crude futures
@@ -356,26 +395,33 @@ export async function getSignalsForMarket(
   const series = seriesTicker ?? seriesFromTicker(ticker)
 
   try {
-    if (FED_SERIES.has(series)) return await fedSignals()
-    if (CPI_SERIES.has(series)) {
-      const [cpi, fed] = await Promise.all([cpiSignals(), fedSignals()])
-      return [...cpi, ...fed]
+    if (FED_SERIES.has(series)) {
+      const [fed, tsys] = await Promise.all([fedSignals(), treasurySignals()])
+      return [...fed, ...tsys]
     }
-    if (JOBS_SERIES.has(series)) return await jobsSignals()
+    if (CPI_SERIES.has(series)) {
+      const [cpi, fed, tsys] = await Promise.all([cpiSignals(), fedSignals(), treasurySignals()])
+      return [...cpi, ...fed, ...tsys]
+    }
+    if (JOBS_SERIES.has(series)) {
+      const [jobs, tsys] = await Promise.all([jobsSignals(), treasurySignals()])
+      return [...jobs, ...tsys]
+    }
     if (SPX_SERIES.has(series)) return await spxSignals(ticker)
     if (NASDAQ_SERIES.has(series)) return await nasdaqSignals(ticker)
     if (BTC_SERIES.has(series)) return await cryptoSignals('BTC-USD')
     if (ETH_SERIES.has(series)) return await cryptoSignals('ETH-USD')
     if (SOL_SERIES.has(series)) return await cryptoSignals('SOL-USD')
     if (OIL_SERIES.has(series)) return await oilSignals()
-    // GDP and tariff/political markets: return macro context
+    // GDP: full macro picture
     if (series === 'KXGDP' || series === 'GDP') {
-      const [cpi, jobs] = await Promise.all([cpiSignals(), jobsSignals()])
-      return [...cpi, ...jobs]
+      const [cpi, jobs, tsys] = await Promise.all([cpiSignals(), jobsSignals(), treasurySignals()])
+      return [...cpi, ...jobs, ...tsys]
     }
+    // Tariff/political: equities + dollar index
     if (series.includes('TARIFF') || series === 'KXNEWTARIFFS') {
-      const spx = await spxSignals()
-      return spx // market reaction is the best signal for tariff probability
+      const [spx, dxy] = await Promise.all([spxSignals(), dxySignal()])
+      return [...spx, ...dxy]
     }
   } catch {
     // signals are best-effort

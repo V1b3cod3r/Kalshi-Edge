@@ -1,4 +1,4 @@
-import { createSign, constants } from 'crypto'
+import { createSign, createPrivateKey, constants } from 'crypto'
 
 const KALSHI_BASE_URL = 'https://api.elections.kalshi.com/trade-api/v2'
 const PATH_PREFIX = '/trade-api/v2'
@@ -14,13 +14,17 @@ function getSignedHeaders(auth: KalshiAuth, method: string, urlPath: string): Re
   const timestampMs = Date.now()
   const msgToSign = `${timestampMs}${method.toUpperCase()}${urlPath}`
 
+  // createPrivateKey normalises both PKCS#1 (-----BEGIN RSA PRIVATE KEY-----)
+  // and PKCS#8 (-----BEGIN PRIVATE KEY-----) so either format works
+  const privateKey = createPrivateKey(auth.privateKey)
+
   const signer = createSign('SHA256')
   signer.update(msgToSign)
   signer.end()
 
   const signature = signer.sign(
     {
-      key: auth.privateKey,
+      key: privateKey,
       padding: constants.RSA_PKCS1_PSS_PADDING,
       saltLength: constants.RSA_PSS_SALTLEN_DIGEST,
     },

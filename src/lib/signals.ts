@@ -4,11 +4,13 @@
  * Maps Kalshi series tickers to live data from free public APIs:
  * - Yahoo Finance (no key): equity indices, VIX, crypto, Fed Funds futures
  * - BLS v1 API (no key): CPI, core CPI
- * - Atlanta Fed (no key): GDPNow current estimate
+ * - Economic calendar: upcoming release dates + street consensus forecasts
  *
  * All fetches have a 5s timeout and fail silently — a missing signal
  * never blocks an analysis or scan.
  */
+
+import { getCalendarSignals } from './calendar'
 
 export interface Signal {
   label: string    // e.g. "VIX (fear index)"
@@ -396,16 +398,16 @@ export async function getSignalsForMarket(
 
   try {
     if (FED_SERIES.has(series)) {
-      const [fed, tsys] = await Promise.all([fedSignals(), treasurySignals()])
-      return [...fed, ...tsys]
+      const [fed, tsys, cal] = await Promise.all([fedSignals(), treasurySignals(), getCalendarSignals(['fed'])])
+      return [...fed, ...tsys, ...cal]
     }
     if (CPI_SERIES.has(series)) {
-      const [cpi, fed, tsys] = await Promise.all([cpiSignals(), fedSignals(), treasurySignals()])
-      return [...cpi, ...fed, ...tsys]
+      const [cpi, fed, tsys, cal] = await Promise.all([cpiSignals(), fedSignals(), treasurySignals(), getCalendarSignals(['cpi', 'pce'])])
+      return [...cpi, ...fed, ...tsys, ...cal]
     }
     if (JOBS_SERIES.has(series)) {
-      const [jobs, tsys] = await Promise.all([jobsSignals(), treasurySignals()])
-      return [...jobs, ...tsys]
+      const [jobs, tsys, cal] = await Promise.all([jobsSignals(), treasurySignals(), getCalendarSignals(['jobs'])])
+      return [...jobs, ...tsys, ...cal]
     }
     if (SPX_SERIES.has(series)) return await spxSignals(ticker)
     if (NASDAQ_SERIES.has(series)) return await nasdaqSignals(ticker)
@@ -413,10 +415,10 @@ export async function getSignalsForMarket(
     if (ETH_SERIES.has(series)) return await cryptoSignals('ETH-USD')
     if (SOL_SERIES.has(series)) return await cryptoSignals('SOL-USD')
     if (OIL_SERIES.has(series)) return await oilSignals()
-    // GDP: full macro picture
+    // GDP: full macro picture + calendar
     if (series === 'KXGDP' || series === 'GDP') {
-      const [cpi, jobs, tsys] = await Promise.all([cpiSignals(), jobsSignals(), treasurySignals()])
-      return [...cpi, ...jobs, ...tsys]
+      const [cpi, jobs, tsys, cal] = await Promise.all([cpiSignals(), jobsSignals(), treasurySignals(), getCalendarSignals(['gdp', 'cpi', 'jobs'])])
+      return [...cpi, ...jobs, ...tsys, ...cal]
     }
     // Tariff/political: equities + dollar index
     if (series.includes('TARIFF') || series === 'KXNEWTARIFFS') {

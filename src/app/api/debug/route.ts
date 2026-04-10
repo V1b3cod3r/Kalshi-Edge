@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server'
 import { getSettings } from '@/lib/storage'
-import { getSignalsForMarket } from '@/lib/signals'
+import { getSignalsForMarket, formatSignals } from '@/lib/signals'
 import { getMarketWebContext, formatWebContext } from '@/lib/search'
+import { getCalendarSignals } from '@/lib/calendar'
 
 const KALSHI_BASE_URL = 'https://api.elections.kalshi.com/trade-api/v2'
 
@@ -25,6 +26,13 @@ export async function GET(req: Request) {
     const series = url.searchParams.get('series') ?? ticker.split('-')[0]
     const signals = await getSignalsForMarket(ticker, series)
     return NextResponse.json({ ticker, series, signals, count: signals.length })
+  }
+
+  // Calendar test: /api/debug?mode=calendar&cat=cpi,jobs,fed
+  if (mode === 'calendar') {
+    const cats = (url.searchParams.get('cat') ?? 'cpi,jobs,fed').split(',') as any[]
+    const signals = await getCalendarSignals(cats)
+    return NextResponse.json({ signals, formatted: formatSignals(signals) })
   }
 
   // Web context test — no Kalshi key needed

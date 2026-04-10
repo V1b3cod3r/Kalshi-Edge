@@ -14,9 +14,11 @@ function getSignedHeaders(auth: KalshiAuth, method: string, urlPath: string): Re
   const timestampMs = Date.now()
   const msgToSign = `${timestampMs}${method.toUpperCase()}${urlPath}`
 
-  // createPrivateKey normalises both PKCS#1 (-----BEGIN RSA PRIVATE KEY-----)
-  // and PKCS#8 (-----BEGIN PRIVATE KEY-----) so either format works
-  const privateKey = createPrivateKey(auth.privateKey)
+  // Normalise the key: replace literal \n sequences with real newlines
+  // (can happen when the PEM is stored in JSON with escaped newlines)
+  // Also handles both PKCS#1 (-----BEGIN RSA PRIVATE KEY-----) and PKCS#8
+  const pemNormalized = auth.privateKey.replace(/\\n/g, '\n')
+  const privateKey = createPrivateKey(pemNormalized)
 
   const signer = createSign('SHA256')
   signer.update(msgToSign)

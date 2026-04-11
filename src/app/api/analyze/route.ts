@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getViews, getSession, getSettings, getCalibrationStats, createPrediction } from '@/lib/storage'
+import { getViews, getSession, getSettings, getCalibrationStats, createPrediction, getRelevantLessons } from '@/lib/storage'
 import { buildAnalysisSystemPrompt, buildAnalysisUserMessage } from '@/lib/prompts'
 import { callClaude } from '@/lib/claude'
 import { MarketInput } from '@/lib/types'
@@ -67,13 +67,20 @@ export async function POST(req: NextRequest) {
     const session = getSession()
     const calibration = getCalibrationStats()
 
+    // Extract keywords from market title for lesson matching
+    const titleKeywords = market.title
+      .toLowerCase()
+      .split(/\W+/)
+      .filter((w) => w.length > 3)
+    const relevantLessons = getRelevantLessons(market.category ?? 'Other/General', titleKeywords, 3)
+
     // Fetch real-time signals + web context in parallel (best-effort, never blocks)
     const [signals, webContext] = await Promise.all([
       getSignalsForMarket(market.id ?? '', market.id?.split('-')[0]),
       getMarketWebContext(market.title, settings.tavily_api_key || undefined),
     ])
 
-    const systemPrompt = buildAnalysisSystemPrompt(calibration)
+    const systemPrompt = buildAnalysisSystemPrompt(calibration, relevantLessons)
     const userMessage = buildAnalysisUserMessage(market, views, session, signals, webContext)
 
     const result = await callClaude(

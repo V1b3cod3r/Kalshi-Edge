@@ -49,6 +49,24 @@ export interface Prediction {
   outcome?: 'YES' | 'NO'        // actual market outcome
   notes?: string
   source: 'scanner' | 'analyze' | 'manual'
+  lesson_id?: string             // set after lesson extracted for a wrong prediction
+}
+
+export interface Lesson {
+  id: string
+  prediction_id: string
+  market_title: string
+  category: string
+  keywords: string[]             // extracted from market title for future matching
+  predicted_direction: 'YES' | 'NO'
+  actual_outcome: 'YES' | 'NO'
+  predicted_probability: number  // Claude's P(YES) 0-1
+  market_price: number           // market P(YES) at time of bet 0-1
+  edge_pct: number
+  what_went_wrong: string        // 1-2 sentence post-mortem
+  what_to_do_differently: string // actionable recommendation
+  mistake_type: 'overconfidence' | 'base_rate_neglect' | 'anchoring' | 'news_overreaction' | 'thin_market' | 'timing_error' | 'other'
+  created_at: string
 }
 
 export interface AppSettings {

@@ -1,6 +1,6 @@
 import fs from 'fs'
 import path from 'path'
-import { MacroView, SessionState, AppSettings, Prediction, CalibrationStats } from './types'
+import { MacroView, SessionState, AppSettings, Prediction, CalibrationStats, Lesson } from './types'
 
 // Support DATA_DIR env var for cloud deployments (Railway mounts a volume here)
 const DATA_DIR = process.env.DATA_DIR ?? path.join(process.cwd(), 'data')
@@ -9,6 +9,7 @@ const VIEWS_FILE = path.join(DATA_DIR, 'views.json')
 const SESSION_FILE = path.join(DATA_DIR, 'session.json')
 const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json')
 const PREDICTIONS_FILE = path.join(DATA_DIR, 'predictions.json')
+const LESSONS_FILE = path.join(DATA_DIR, 'lessons.json')
 
 const DEFAULT_SESSION: SessionState = {
   current_bankroll: 10000,
@@ -157,6 +158,62 @@ export function resolvePrediction(id: string, outcome: 'YES' | 'NO'): Prediction
 export function deletePrediction(id: string): void {
   const predictions = getPredictions()
   savePredictions(predictions.filter((p) => p.id !== id))
+}
+
+export function updatePrediction(id: string, updates: Partial<Prediction>): Prediction {
+  const predictions = getPredictions()
+  const idx = predictions.findIndex((p) => p.id === id)
+  if (idx === -1) throw new Error(`Prediction ${id} not found`)
+  predictions[idx] = { ...predictions[idx], ...updates }
+  savePredictions(predictions)
+  return predictions[idx]
+}
+
+// Lessons — self-correcting AI memory store
+export function getLessons(): Lesson[] {
+  return readJson<Lesson[]>(LESSONS_FILE, [])
+}
+
+export function saveLessons(lessons: Lesson[]): void {
+  writeJson(LESSONS_FILE, lessons)
+}
+
+export function createLesson(data: Omit<Lesson, 'id' | 'created_at'>): Lesson {
+  const lessons = getLessons()
+  const lesson: Lesson = {
+    ...data,
+    id: `lesson-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    created_at: new Date().toISOString(),
+  }
+  lessons.unshift(lesson)
+  saveLessons(lessons)
+  return lesson
+}
+
+export function getRelevantLessons(category: string, keywords: string[], limit = 5): Lesson[] {
+  const lessons = getLessons()
+  if (lessons.length === 0) return []
+
+  const scored = lessons.map((l) => {
+    let score = 0
+    if (l.category === category) score += 3
+    for (const kw of keywords) {
+      const kwLower = kw.toLowerCase()
+      if (l.keywords.some((k) => k.toLowerCase().includes(kwLower) || kwLower.includes(k.toLowerCase()))) {
+        score += 2
+      }
+    }
+    // Recency boost: lessons from last 30 days score slightly higher
+    const ageDays = (Date.now() - new Date(l.created_at).getTime()) / (1000 * 60 * 60 * 24)
+    if (ageDays < 30) score += 1
+    return { lesson: l, score }
+  })
+
+  return scored
+    .filter((s) => s.score > 0)
+    .sort((a, b) => b.score - a.score || new Date(b.lesson.created_at).getTime() - new Date(a.lesson.created_at).getTime())
+    .slice(0, limit)
+    .map((s) => s.lesson)
 }
 
 // Calibration stats — computed on the fly from resolved predictions

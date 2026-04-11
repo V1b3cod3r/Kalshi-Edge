@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getViews, getSession, getSettings, getCalibrationStats, createPrediction } from '@/lib/storage'
+import { getViews, getSession, getSettings, getCalibrationStats, createPrediction, getRelevantLessons } from '@/lib/storage'
 import { buildScannerSystemPrompt, buildScannerUserMessage } from '@/lib/prompts'
 import { callClaude } from '@/lib/claude'
 import { fetchMarkets } from '@/lib/kalshi'
@@ -239,7 +239,12 @@ export async function POST(req: NextRequest) {
     const session = getSession()
     const calibration = getCalibrationStats()
 
-    const systemPrompt = buildScannerSystemPrompt(calibration)
+    // Get lessons relevant to the category being scanned (or all categories if no filter)
+    const scanCategory = category && category !== 'All' ? category : 'Other/General'
+    const scanKeywords = category && category !== 'All' ? [category.toLowerCase()] : []
+    const relevantLessons = getRelevantLessons(scanCategory, scanKeywords, 5)
+
+    const systemPrompt = buildScannerSystemPrompt(calibration, relevantLessons)
     const userMessage = buildScannerUserMessage(normalized, views, session, signalMap, webContextMap)
 
     const rawResult = await callClaude(settings.anthropic_api_key, systemPrompt, userMessage)

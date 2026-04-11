@@ -295,15 +295,25 @@ export default function PredictionsPage() {
                       </td>
                       <td style={cellStyle}>
                         {p.outcome ? (
-                          <span
-                            className="text-xs font-bold px-2 py-0.5 rounded-full"
-                            style={{
-                              backgroundColor: isCorrect ? '#22c55e20' : '#ef444420',
-                              color: isCorrect ? '#22c55e' : '#ef4444',
-                            }}
-                          >
-                            {isCorrect ? '✓ WIN' : '✗ LOSS'} ({p.outcome})
-                          </span>
+                          <div className="flex items-center gap-1.5">
+                            <span
+                              className="text-xs font-bold px-2 py-0.5 rounded-full"
+                              style={{
+                                backgroundColor: isCorrect ? '#22c55e20' : '#ef444420',
+                                color: isCorrect ? '#22c55e' : '#ef4444',
+                              }}
+                            >
+                              {isCorrect ? '✓ WIN' : '✗ LOSS'} ({p.outcome})
+                            </span>
+                            {!isCorrect && p.lesson_id && (
+                              <span
+                                title="Lesson extracted — Claude analyzed this loss and added it to the learning memory"
+                                style={{ fontSize: '13px', cursor: 'default' }}
+                              >
+                                🧠
+                              </span>
+                            )}
+                          </div>
                         ) : resolvingId === p.id ? (
                           <span style={{ color: '#64748b', fontSize: '11px' }}>saving...</span>
                         ) : (

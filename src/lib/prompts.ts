@@ -1,8 +1,29 @@
-import { MacroView, SessionState, MarketInput, CalibrationStats } from './types'
+import { MacroView, SessionState, MarketInput, CalibrationStats, Lesson } from './types'
 import { Signal, formatSignals } from './signals'
 import { WebContext, formatWebContext } from './search'
 
-export function buildAnalysisSystemPrompt(calibration?: CalibrationStats): string {
+function buildLessonsSection(lessons: Lesson[]): string {
+  if (lessons.length === 0) return ''
+  const items = lessons.map((l, i) =>
+    `${i + 1}. **"${l.market_title}"** (${l.category})\n   - What went wrong: ${l.what_went_wrong}\n   - Fix: ${l.what_to_do_differently}\n   - Mistake type: ${l.mistake_type}`
+  ).join('\n')
+  const seenTypes = new Set<string>()
+  lessons.forEach((l) => seenTypes.add(l.mistake_type))
+  const mistakeTypes = Array.from(seenTypes).join(', ')
+  return `
+
+---
+
+## Past Mistakes to Learn From
+
+These are wrong predictions on similar markets. Apply these lessons NOW:
+
+${items}
+
+**Critical**: The mistakes above all involve ${mistakeTypes}. Be extra vigilant about these failure modes when analyzing this market.`
+}
+
+export function buildAnalysisSystemPrompt(calibration?: CalibrationStats, lessons: Lesson[] = []): string {
   // Build calibration section only if we have meaningful resolved data
   let calibrationSection = ''
   if (calibration && calibration.resolved_predictions >= 5) {
@@ -214,10 +235,10 @@ If no edge exists: output NO BET — market appears fairly priced with brief rea
 - **Flag uncertainty**: If you don't have enough information to estimate confidently, say so explicitly.
 - **Avoid recency bias**: Anchor to base rates.
 - **Avoid anchoring to market price**: The market price is a hypothesis to test, not a prior.
-- **Be concise**: Give the key evidence points only. Quality over quantity.${calibrationSection}`
+- **Be concise**: Give the key evidence points only. Quality over quantity.${calibrationSection}${buildLessonsSection(lessons)}`
 }
 
-export function buildScannerSystemPrompt(calibration?: CalibrationStats): string {
+export function buildScannerSystemPrompt(calibration?: CalibrationStats, lessons: Lesson[] = []): string {
   let calibrationSection = ''
   if (calibration && calibration.resolved_predictions >= 5) {
     const biasNote = calibration.yes_bias > 0.04
@@ -296,7 +317,7 @@ Rules:
 - Include ALL other markets in screened_out
 - Rank opportunities by score descending
 - The ticker field MUST exactly match the ticker provided in the input
-- Do not invent tickers or modify them`
+- Do not invent tickers or modify them${buildLessonsSection(lessons)}`
 }
 
 export function buildAnalysisUserMessage(

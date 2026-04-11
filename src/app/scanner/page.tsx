@@ -370,6 +370,9 @@ export default function ScannerPage() {
       setScreenedOut(scanData.screened_out || [])
       setSessionNotes(scanData.session_notes || '')
       setScanPhase('done')
+
+      // Background: auto-resolve any pending predictions that Kalshi has settled
+      fetch('/api/predictions/auto-resolve', { method: 'POST' }).catch(() => {})
     } catch (err: any) {
       setToast({ message: err.message || 'Auto-scan failed', type: 'error' })
       setScanPhase('idle')

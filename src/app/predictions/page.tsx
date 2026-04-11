@@ -63,12 +63,41 @@ export default function PredictionsPage() {
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState<Filter>('all')
   const [resolvingId, setResolvingId] = useState<string | null>(null)
+  const [autoResolveStatus, setAutoResolveStatus] = useState<string | null>(null)
 
-  useEffect(() => {
+  const loadPredictions = () =>
     fetch('/api/predictions')
       .then((r) => r.json())
       .then((d) => setPredictions(d.predictions || []))
-      .finally(() => setLoading(false))
+
+  const runAutoResolve = async () => {
+    setAutoResolveStatus('Checking Kalshi for resolved markets...')
+    try {
+      const res = await fetch('/api/predictions/auto-resolve', { method: 'POST' })
+      const data = await res.json()
+      if (data.resolved > 0) {
+        await loadPredictions()
+        const wins = data.newly_resolved.filter((r: any) => r.was_correct).length
+        const losses = data.newly_resolved.filter((r: any) => !r.was_correct).length
+        const parts = []
+        if (wins > 0) parts.push(`${wins} win${wins > 1 ? 's' : ''}`)
+        if (losses > 0) parts.push(`${losses} loss${losses > 1 ? 'es' : ''}`)
+        setAutoResolveStatus(`Auto-resolved ${data.resolved} market${data.resolved > 1 ? 's' : ''}: ${parts.join(', ')}`)
+      } else {
+        setAutoResolveStatus(null)
+      }
+    } catch {
+      setAutoResolveStatus(null)
+    }
+  }
+
+  useEffect(() => {
+    loadPredictions().finally(() => setLoading(false))
+    // Auto-resolve on mount, then every 5 minutes
+    runAutoResolve()
+    const interval = setInterval(runAutoResolve, 5 * 60 * 1000)
+    return () => clearInterval(interval)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const resolve = async (id: string, outcome: 'YES' | 'NO') => {
@@ -116,6 +145,13 @@ export default function PredictionsPage() {
         <p className="text-sm" style={{ color: '#64748b' }}>
           Track model predictions vs outcomes to measure edge and calibration
         </p>
+        {autoResolveStatus && (
+          <div className="mt-2 inline-flex items-center gap-2 text-xs px-3 py-1.5 rounded-lg"
+            style={{ backgroundColor: '#1e1e2e', color: '#94a3b8', border: '1px solid #2a2a3e' }}>
+            <span style={{ color: '#6366f1' }}>●</span>
+            {autoResolveStatus}
+          </div>
+        )}
       </div>
 
       {/* Stats bar */}

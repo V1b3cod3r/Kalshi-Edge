@@ -1,29 +1,23 @@
 import { test, expect } from '@playwright/test'
 
-const mockScanResult = `## Market Scan Results — 2025-04-06
-Markets screened: 3
-Active views applied: none
-
-### Ranked Opportunities
-
-| Rank | Market | Dir | My Est. | Market | Edge | Score | Flags |
-|------|--------|-----|---------|--------|------|-------|-------|
-| 1 | Will the Fed cut rates? | YES | 65% | 45% | +20% | 95 | |
-| 2 | Will inflation fall below 3%? | YES | 62% | 60% | +2% | 40 | [THIN] |
-| 3 | Will Chiefs win Super Bowl? | NO | 75% | 30% | +5% | 55 | |
-
-### Top 3 — Recommended for Full Analysis
-
-**#1: Will the Fed cut rates?**
-- Quick rationale: Strong economic signals support rate cut
-- Suggested direction: YES
-- Quick estimate: 65% vs. market's 45% = ~20% edge
-`
-
-const mockKalshiMarkets = [
-  { ticker: 'FED-DEC', title: 'Will the Fed cut rates?', yes_ask: 45, yes_bid: 43, volume_24h: 5000 },
-  { ticker: 'INFL', title: 'Will inflation fall below 3%?', yes_ask: 60, yes_bid: 58, volume_24h: 800 },
-  { ticker: 'NFL-KC', title: 'Will Chiefs win Super Bowl?', yes_ask: 30, yes_bid: 28, volume_24h: 12000 },
+const mockOpportunities = [
+  {
+    ticker: 'FED-DEC',
+    title: 'Will the Fed cut rates?',
+    direction: 'YES' as const,
+    my_estimate_pct: 65,
+    market_price_pct: 45,
+    edge_pct: 20,
+    score: 95,
+    rationale: 'Strong economic signals support a rate cut.',
+    key_risk: 'Inflation surprise could delay action.',
+    flags: [],
+    confidence: 'HIGH' as const,
+    yes_price: 0.45,
+    no_price: 0.55,
+    volume_24h: 5000,
+    resolution_date: null,
+  },
 ]
 
 test.describe('Scanner Page - Auto-Scan UI', () => {
@@ -36,8 +30,8 @@ test.describe('Scanner Page - Auto-Scan UI', () => {
     await expect(page.getByRole('heading', { name: 'Market Scanner' })).toBeVisible()
   })
 
-  test('shows Auto-Scan Live Markets heading', async ({ page }) => {
-    await expect(page.getByText('Auto-Scan Live Markets')).toBeVisible()
+  test('shows page subtitle', async ({ page }) => {
+    await expect(page.getByText(/Fetch live Kalshi markets/i)).toBeVisible()
   })
 
   test('shows category filter dropdown', async ({ page }) => {
@@ -54,22 +48,13 @@ test.describe('Scanner Page - Auto-Scan UI', () => {
     await expect(slider).toBeVisible()
   })
 
-  test('manual entry section is present (collapsed by default)', async ({ page }) => {
-    await expect(page.getByRole('button', { name: /manual entry/i })).toBeVisible()
+  test('shows min volume filter buttons', async ({ page }) => {
+    // Min. Volume section always visible with Any/$500+/$1K+/$5K+ buttons
+    await expect(page.getByRole('button', { name: 'Any' })).toBeVisible()
+    await expect(page.getByRole('button', { name: '$500+' })).toBeVisible()
   })
 
-  test('performs auto-scan with loading states and shows results', async ({ page }) => {
-    // Function-predicate routes — most reliable, matches pathname only
-    await page.route(
-      (url) => url.pathname === '/api/kalshi/markets',
-      async (route) => {
-        await route.fulfill({
-          status: 200,
-          contentType: 'application/json',
-          body: JSON.stringify({ markets: mockKalshiMarkets, cursor: null }),
-        })
-      }
-    )
+  test('performs auto-scan and shows opportunity cards', async ({ page }) => {
     await page.route(
       (url) => url.pathname === '/api/auto-scan',
       async (route) => {
@@ -77,9 +62,10 @@ test.describe('Scanner Page - Auto-Scan UI', () => {
           status: 200,
           contentType: 'application/json',
           body: JSON.stringify({
-            result: mockScanResult,
+            opportunities: mockOpportunities,
+            screened_out: [],
+            session_notes: '',
             markets_scanned: 3,
-            markets: mockKalshiMarkets,
           }),
         })
       }
@@ -93,13 +79,14 @@ test.describe('Scanner Page - Auto-Scan UI', () => {
     await page.getByRole('button', { name: 'Scan Kalshi Now' }).click()
     await autoScanDone
 
-    // ScannerTable renders "Ranked Opportunities" heading whenever rows exist
-    await expect(page.getByText('Ranked Opportunities')).toBeVisible({ timeout: 10000 })
+    // OpportunityCard renders the market title when opportunities exist
+    await expect(page.getByText('Will the Fed cut rates?')).toBeVisible({ timeout: 10000 })
   })
 
   test('shows error message on scan failure', async ({ page }) => {
+    // Scanner calls /api/auto-scan directly (Kalshi fetch happens server-side)
     await page.route(
-      (url) => url.pathname === '/api/kalshi/markets',
+      (url) => url.pathname === '/api/auto-scan',
       async (route) => {
         await route.fulfill({
           status: 400,

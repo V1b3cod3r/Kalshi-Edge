@@ -418,14 +418,14 @@ export default function ScannerPage() {
               Markets to scan: <span style={{ color: '#a5b4fc' }}>{autoLimit}</span>
             </label>
             <input
-              type="range" min={5} max={25} step={5} value={autoLimit}
+              type="range" min={5} max={100} step={5} value={autoLimit}
               onChange={(e) => setAutoLimit(Number(e.target.value))}
               disabled={isScanning}
               className="w-full accent-indigo-500"
               style={{ cursor: isScanning ? 'not-allowed' : 'pointer' }}
             />
             <div className="flex justify-between text-xs mt-1" style={{ color: '#475569' }}>
-              <span>5</span><span>10</span><span>15</span><span>20</span><span>25</span>
+              <span>5</span><span>25</span><span>50</span><span>75</span><span>100</span>
             </div>
           </div>
 

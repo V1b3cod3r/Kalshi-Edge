@@ -3,6 +3,8 @@ node_modules/
 .next/
 tsconfig.tsbuildinfo
 *.env.local
+test-results/
+playwright-report/
 
 
 # Runtime data files (user-specific, not source code)

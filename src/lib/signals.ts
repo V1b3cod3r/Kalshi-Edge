@@ -223,11 +223,12 @@ async function fedSignals(): Promise<Signal[]> {
  * Solve for newRate, then P(cut) = (currentRate − newRate) / 0.25
  */
 async function fedWatchSignal(): Promise<Signal[]> {
-  // 2026 FOMC decision dates (last day of each 2-day meeting)
+  // 2026 FOMC decision dates (second day of each 2-day meeting)
+  // Source: Federal Reserve 2026 FOMC calendar (mirrors 2025 schedule shifted ~1 year)
   const FOMC_DATES = [
-    '2026-01-29', '2026-03-19', '2026-04-30',
-    '2026-06-18', '2026-07-30', '2026-09-17',
-    '2026-10-29', '2026-12-10',
+    '2026-01-28', '2026-03-18', '2026-04-29',
+    '2026-06-17', '2026-07-29', '2026-09-16',
+    '2026-10-28', '2026-12-09',
   ]
 
   // Month-code mapping for CME futures tickers (Jan=F ... Dec=Z)

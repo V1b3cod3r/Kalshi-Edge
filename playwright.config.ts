@@ -10,7 +10,14 @@ export default defineConfig({
   projects: [
     {
       name: 'chromium',
-      use: { ...devices['Desktop Chrome'] },
+      use: {
+        ...devices['Desktop Chrome'],
+        // Use the pre-installed headless Chromium build available on this machine
+        launchOptions: {
+          executablePath: '/opt/pw-browsers/chromium_headless_shell-1194/chrome-linux/headless_shell',
+          args: ['--no-sandbox', '--disable-setuid-sandbox'],
+        },
+      },
     },
   ],
   webServer: {

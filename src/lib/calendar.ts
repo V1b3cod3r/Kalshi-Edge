@@ -159,9 +159,10 @@ const HARDCODED_2026: Array<{ event: string; category: CalendarCategory; date: D
   { event: 'Non Farm Payrolls', category: 'jobs', date: d(2026, 11, 6) },
   { event: 'Non Farm Payrolls', category: 'jobs', date: d(2026, 12, 4) },
   // FOMC meetings (decision day = second day)
+  // Source: Federal Reserve 2026 FOMC calendar
   { event: 'Fed Interest Rate Decision', category: 'fed', date: d(2026, 1, 28) },
   { event: 'Fed Interest Rate Decision', category: 'fed', date: d(2026, 3, 18) },
-  { event: 'Fed Interest Rate Decision', category: 'fed', date: d(2026, 5, 6) },
+  { event: 'Fed Interest Rate Decision', category: 'fed', date: d(2026, 4, 29) },
   { event: 'Fed Interest Rate Decision', category: 'fed', date: d(2026, 6, 17) },
   { event: 'Fed Interest Rate Decision', category: 'fed', date: d(2026, 7, 29) },
   { event: 'Fed Interest Rate Decision', category: 'fed', date: d(2026, 9, 16) },

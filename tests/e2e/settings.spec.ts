@@ -49,7 +49,7 @@ test.describe('Settings Page', () => {
 
   test('shows API key fields', async ({ page }) => {
     await expect(page.getByText('Anthropic API Key')).toBeVisible()
-    await expect(page.getByText('Kalshi API Key')).toBeVisible()
+    await expect(page.getByText('Kalshi API Key ID')).toBeVisible()
   })
 
   test('shows risk management fields', async ({ page }) => {

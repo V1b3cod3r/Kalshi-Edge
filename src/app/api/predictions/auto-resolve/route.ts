@@ -39,11 +39,16 @@ export async function POST() {
         const market = await fetchMarket(auth, pred.ticker!)
 
         // Determine if the market has settled
-        const status = (market.status || '').toLowerCase()
         const result = (market.result || '').toLowerCase()
+        const status = (market.status || '').toLowerCase()
 
-        const isSettled = status === 'settled' || status === 'finalized' || status === 'resolved'
-        if (!isSettled || !result || result === 'void') return null
+        // Use result field as primary settlement indicator — more reliable than status
+        // strings which can vary (settled/finalized/resolved). If result is yes/no the
+        // market has definitively resolved regardless of the status label.
+        const hasResult = result === 'yes' || result === 'no'
+        const isSettledByStatus = status === 'settled' || status === 'finalized' || status === 'resolved'
+        if ((!hasResult && !isSettledByStatus) || result === 'void') return null
+        if (!hasResult) return null  // status says settled but no result yet — skip
 
         // Map Kalshi result to our YES/NO outcome
         const outcome: 'YES' | 'NO' = result === 'yes' ? 'YES' : 'NO'

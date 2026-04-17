@@ -77,7 +77,7 @@ function annualizedVol(closes: number[]): number {
 async function spxSignals(marketTicker?: string): Promise<Signal[]> {
   const signals: Signal[] = []
   const [spx, vix] = await Promise.all([
-    yahooOHLC('%5EGSPC', '10d'),
+    yahooOHLC('%5EGSPC', '30d'),
     yahooPrice('%5EVIX'),
   ])
 
@@ -126,7 +126,7 @@ async function spxSignals(marketTicker?: string): Promise<Signal[]> {
 
 async function nasdaqSignals(marketTicker?: string): Promise<Signal[]> {
   const signals: Signal[] = []
-  const data = await yahooOHLC('%5EIXIC', '10d')
+  const data = await yahooOHLC('%5EIXIC', '30d')
   if (data && data.closes.length >= 2) {
     const curr = data.closes.at(-1)!
     const prev = data.closes.at(-2)!

@@ -66,7 +66,9 @@ function OpportunityCard({ opp, bankroll }: { opp: Opportunity; bankroll: number
   const [orderId, setOrderId] = useState<string | null>(null)
 
   const side = opp.direction.toLowerCase() as 'yes' | 'no'
-  const priceDecimal = side === 'yes' ? (opp.yes_price ?? 0.5) : (opp.no_price ?? 0.5)
+  const rawPrice = side === 'yes' ? opp.yes_price : opp.no_price
+  const priceAvailable = rawPrice != null
+  const priceDecimal = rawPrice ?? 0
   const priceCents = Math.round(priceDecimal * 100)
   const totalCost = (contracts * priceCents) / 100
 
@@ -306,8 +308,8 @@ function OpportunityCard({ opp, bankroll }: { opp: Opportunity; bankroll: number
             </svg>
             <span className="text-sm" style={{ color: '#94a3b8' }}>Placing order...</span>
           </div>
-        ) : (
-          // idle
+        ) : priceAvailable ? (
+          // idle — price available
           <button
             onClick={() => setTradeState('confirm')}
             className="w-full py-3 rounded-xl text-sm font-semibold flex items-center justify-center gap-2"
@@ -315,6 +317,14 @@ function OpportunityCard({ opp, bankroll }: { opp: Opportunity; bankroll: number
           >
             Bet {opp.direction} @ {priceCents}¢
           </button>
+        ) : (
+          // idle — no price available, disable trade
+          <div
+            className="w-full py-3 rounded-xl text-sm text-center"
+            style={{ backgroundColor: '#1e1e2e', color: '#475569' }}
+          >
+            Price unavailable — cannot place order
+          </div>
         )}
       </div>
     </div>

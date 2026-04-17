@@ -26,7 +26,11 @@ function extractPrediction(
   const adjMatch = markdown.match(/[Vv]iew.adjusted estimate[:\s]+(\d+)%/)
   const dataMatch = markdown.match(/[Mm]y estimate.*?[:\s]+(\d+)%/)
   const probPct = adjMatch ? parseInt(adjMatch[1]) : dataMatch ? parseInt(dataMatch[1]) : null
-  const predicted_probability = probPct !== null ? probPct / 100 : market.yes_price
+  // If Claude gave a direction but no parseable probability, skip saving rather than
+  // defaulting to market price (which would create a zero-edge prediction and corrupt
+  // calibration stats).
+  if (probPct === null) return null
+  const predicted_probability = probPct / 100
 
   // Edge magnitude
   const edgeMatch = markdown.match(/\*\*Edge\*\*[:\s]+[+\-]?(\d+(?:\.\d+)?)%/)

@@ -82,12 +82,12 @@ function normalizeMarket(m: any): MarketInput | null {
   // No valid price found — drop the market
   if (!yes_price || !no_price) return null
 
-  // Volume: Kalshi returns volume_24h_fp / volume_fp as decimal dollar strings
-  const volume_24h =
-    p(m.volume_24h_fp ?? m.volume_24h) ||
-    p(m.volume_fp ?? m.volume) ||
-    p(m.dollar_volume) ||
-    0
+  // Volume: always compute 24h dollar volume as contracts × midpoint price.
+  // Kalshi's raw volume_24h is contract count; their _fp fields are inconsistent.
+  // Computing ourselves gives a reliable dollar figure for filtering and display.
+  const contracts_24h = p(m.volume_24h) || 0
+  const mid = (yes_price + (1 - no_price)) / 2
+  const volume_24h = contracts_24h * mid
 
   // Resolution date
   const resolution_date = m.close_time || m.expiration_time || m.expected_expiration_ts || undefined
@@ -169,81 +169,60 @@ export async function POST(req: NextRequest) {
       )
     }
 
-    // Known Kalshi series with real liquid markets, grouped by category
-    const SERIES_BY_CATEGORY: Record<string, string[]> = {
-      'Economics/Finance': [
-        'KXCPI', 'KXGDP', 'GDP', 'KXPCECORE', 'KXRATECUT', 'KXRATECUTCOUNT',
-        'KXJOBLESS', 'KXFRM', 'KXECB', 'KXBOE', 'OILW', 'KXNATGASMON',
-        'KXISMSERVICES', 'KXUSRETAIL', 'KXFEDDECISION', 'KXFEDRATEMIN',
-        'NASDAQ100', 'INXU', 'INXW', 'INXD', 'KXBTC', 'KXETH', 'KXSOL', 'KXSOLE',
-      ],
-      'Politics & Elections': [
-        'PRES', 'KXNEWTARIFFS', 'KXTARIFFSPRC', 'KXTARIFFCAN', 'KXTARIFFSEU',
-        'KXDCEIL', 'KXGOVTSHUTDOWN', 'KXTRUMPCHINA', 'KXSHUTLENGTH',
-        'KXRECNCH', 'KXRECSS', 'BBB',
-      ],
-      'Sports': [
-        'KXNBA', 'KXNFL', 'KXMLB', 'KXNHL',
-      ],
-      'Other/General': [
-        'KXAI', 'KXTECH',
-      ],
-    }
-
-    const seriesToFetch = category && category !== 'All'
-      ? (SERIES_BY_CATEGORY[category] ?? [])
-      : Object.values(SERIES_BY_CATEGORY).flat()
-
-    // Step 1: Fetch markets from known series in parallel
-    let rawMarkets: any[] = []
-
-    if (seriesToFetch.length > 0) {
-      const results = await Promise.all(
-        seriesToFetch.map((series) =>
-          fetchMarkets(null, {
-            series_ticker: series,
-            limit: 50,
-          }).catch(() => ({ markets: [], cursor: null }))
-        )
-      )
-      rawMarkets = results.flatMap((r) => r.markets)
-    }
-
-    // Deduplicate by ticker — same market can appear across multiple series queries
+    // Step 1: Paginate through ALL open markets on Kalshi.
+    // status=open filters at the API level so closed/settled markets never enter
+    // the pool. Paginating the generic endpoint covers every series — a curated
+    // list goes stale as Kalshi adds new markets.
+    const rawMarkets: any[] = []
     const seenTickers = new Set<string>()
-    rawMarkets = rawMarkets.filter((m: any) => {
-      const key = m.ticker || m.id
-      if (!key || seenTickers.has(key)) return false
-      seenTickers.add(key)
-      return true
-    })
+    let cursor: string | null = null
+    const MAX_PAGES = 25 // ~5000 markets max; Kalshi usually has <1000 open at once
 
-    // Fallback: if series queries returned nothing, page through generic endpoint
-    if (rawMarkets.length === 0) {
-      let cursor: string | null = null
-      for (let page = 0; page < 10; page++) {
-        const result = await fetchMarkets(null, {
-          limit: 100,
-          ...(cursor ? { cursor } : {}),
-        })
-        const nonMve = result.markets.filter(
-          (m: any) => !m.mve_selected_legs && !String(m.ticker ?? '').includes('KXMVE')
-        )
-        rawMarkets.push(...nonMve)
-        cursor = result.cursor
-        if (rawMarkets.length >= limit * 4 || !cursor) break
+    for (let page = 0; page < MAX_PAGES; page++) {
+      const result: { markets: any[]; cursor: string | null } = await fetchMarkets(null, {
+        status: 'open',
+        limit: 200,
+        ...(cursor ? { cursor } : {}),
+      }).catch(() => ({ markets: [] as any[], cursor: null as string | null }))
+
+      for (const m of result.markets) {
+        const key = m.ticker || m.id
+        if (!key || seenTickers.has(key)) continue
+        // Skip MVE parlay bundles — user-created multi-leg combos with no liquidity
+        if (m.mve_selected_legs || String(m.ticker ?? '').includes('KXMVE')) continue
+        seenTickers.add(key)
+        rawMarkets.push(m)
       }
+
+      cursor = result.cursor
+      if (!cursor) break
     }
 
     // Step 2: Normalize and filter
-    const normalized: MarketInput[] = rawMarkets
+    const now = Date.now()
+    let normalized: MarketInput[] = rawMarkets
       .map(normalizeMarket)
       .filter((m): m is MarketInput => m !== null)
+      // Safety net: drop markets whose resolution date has passed, even if Kalshi
+      // still reports them as "open" (can happen during the settlement window).
+      .filter((m) => {
+        if (!m.resolution_date) return true
+        const ts = Date.parse(m.resolution_date)
+        return !Number.isFinite(ts) || ts > now
+      })
       // Remove near-certain markets (no edge at extremes)
       .filter((m) => m.yes_price >= 0.03 && m.yes_price <= 0.97)
-      // Apply min volume filter (default 0 = allow any)
+
+    // Apply category filter post-normalize — our mapCategory bucketing is more
+    // reliable than Kalshi's raw category strings.
+    if (category && category !== 'All') {
+      normalized = normalized.filter((m) => m.category === category)
+    }
+
+    normalized = normalized
+      // Apply min dollar volume filter (default 0 = allow any)
       .filter((m) => (m.volume_24h ?? 0) >= min_volume)
-      // Sort by volume descending (most liquid = most tradeable)
+      // Sort by dollar volume descending (most liquid = most tradeable)
       .sort((a, b) => (b.volume_24h ?? 0) - (a.volume_24h ?? 0))
       // Take top N
       .slice(0, limit)

@@ -35,11 +35,22 @@ Output this JSON object:
 }`
 
     const message = await client.messages.create({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 512,
-      system: systemPrompt,
+      model: 'claude-opus-4-7',
+      max_tokens: 1024,
+      // Adaptive thinking at low effort — simple structured extraction doesn't need
+      // deep reasoning, but 4.7 requires adaptive (budget_tokens removed).
+      thinking: { type: 'adaptive' } as any,
+      output_config: { effort: 'low' } as any,
+      // Cache the stable system prompt to avoid re-tokenizing on every loss.
+      system: [
+        {
+          type: 'text',
+          text: systemPrompt,
+          cache_control: { type: 'ephemeral' },
+        },
+      ] as any,
       messages: [{ role: 'user', content: userMessage }],
-    })
+    } as any)
 
     const textBlock = message.content.find((b: any) => b.type === 'text')
     if (!textBlock) return

@@ -91,7 +91,8 @@ export async function POST(req: NextRequest) {
       settings.anthropic_api_key,
       systemPrompt,
       userMessage,
-      { extendedThinking: settings.use_extended_thinking ?? false }
+      // Map legacy use_extended_thinking: true → effort 'max', false → 'high'
+      { effort: settings.use_extended_thinking ? 'max' : 'high' }
     )
 
     // Auto-save prediction to calibration log (best-effort, never blocks response)

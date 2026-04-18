@@ -78,7 +78,7 @@ export interface AppSettings {
   max_position_pct: number     // default 0.05
   max_corr_exposure_pct: number // default 0.15
   default_kelly_fraction: 'low' | 'medium' | 'high'
-  use_extended_thinking: boolean // enables Claude extended thinking for deep analysis (slower but better)
+  use_extended_thinking: boolean // effort 'max' (true) vs 'high' (false) on claude-opus-4-7
 }
 
 export interface CalibrationStats {

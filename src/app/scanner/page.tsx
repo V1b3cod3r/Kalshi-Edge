@@ -376,10 +376,12 @@ export default function ScannerPage() {
       if (!scanRes.ok) throw new Error(scanData.error || 'Scan failed')
 
       setMarketsFound(scanData.markets_scanned || 0)
-      setOpportunities(scanData.opportunities || [])
+      const opportunities = scanData.opportunities || []
+      setOpportunities(opportunities)
       setScreenedOut(scanData.screened_out || [])
       setSessionNotes(scanData.session_notes || '')
       setScanPhase('done')
+      try { sessionStorage.setItem('last_scan_opportunities', JSON.stringify(opportunities)) } catch {}
 
       // Background: auto-resolve any pending predictions that Kalshi has settled
       fetch('/api/predictions/auto-resolve', { method: 'POST' }).catch(() => {})

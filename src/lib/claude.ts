@@ -2,8 +2,14 @@ import Anthropic from '@anthropic-ai/sdk'
 
 export interface ClaudeOptions {
   // Controls reasoning depth and token spend. 'high' is the default; 'max' for
-  // the deepest analysis (slower, pricier). Maps to output_config.effort on 4.7.
-  effort?: 'low' | 'medium' | 'high' | 'max'
+  // the deepest analysis (slower, pricier). 'xhigh' is Opus 4.7-specific between
+  // high and max. Maps to output_config.effort on 4.7.
+  effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+}
+
+export interface StreamCallbacks {
+  onThinking?: (chunk: string) => void
+  onText?: (chunk: string) => void
 }
 
 export async function callClaude(
@@ -47,4 +53,50 @@ export async function callClaude(
   }
 
   return (textBlock as any).text
+}
+
+export async function callClaudeStream(
+  apiKey: string,
+  systemPrompt: string,
+  userMessage: string,
+  options: ClaudeOptions & StreamCallbacks = {}
+): Promise<{ text: string; thinking: string }> {
+  const client = new Anthropic({ apiKey })
+  const { effort = 'high', onThinking, onText } = options
+
+  const stream = await client.messages.stream({
+    model: 'claude-opus-4-7',
+    max_tokens: 16000,
+    // 'summarized' display shows the user a condensed view of Claude's reasoning
+    thinking: { type: 'adaptive', display: 'summarized' } as any,
+    output_config: { effort } as any,
+    system: [
+      {
+        type: 'text',
+        text: systemPrompt,
+        cache_control: { type: 'ephemeral' },
+      },
+    ] as any,
+    messages: [{ role: 'user', content: userMessage }],
+  } as any)
+
+  let accumulatedText = ''
+  let accumulatedThinking = ''
+
+  for await (const event of stream) {
+    if (event.type === 'content_block_delta') {
+      const delta = (event as any).delta
+      if (delta?.type === 'thinking_delta') {
+        const chunk: string = delta.thinking || ''
+        accumulatedThinking += chunk
+        onThinking?.(chunk)
+      } else if (delta?.type === 'text_delta') {
+        const chunk: string = delta.text || ''
+        accumulatedText += chunk
+        onText?.(chunk)
+      }
+    }
+  }
+
+  return { text: accumulatedText, thinking: accumulatedThinking }
 }

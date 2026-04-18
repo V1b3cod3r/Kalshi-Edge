@@ -411,6 +411,85 @@ export function buildAnalysisUserMessage(
   return msg
 }
 
+export function buildPortfolioSystemPrompt(calibration?: CalibrationStats): string {
+  let calibrationSection = ''
+  if (calibration && calibration.resolved_predictions >= 3) {
+    calibrationSection = `
+
+## Track Record
+- ${calibration.resolved_predictions} resolved · ${(calibration.overall_accuracy * 100).toFixed(0)}% accuracy · Brier ${calibration.brier_score.toFixed(3)}
+- YES bias: ${calibration.yes_bias > 0.03 ? `+${(calibration.yes_bias*100).toFixed(0)}pp (over-predicting YES)` : calibration.yes_bias < -0.03 ? `${(calibration.yes_bias*100).toFixed(0)}pp (over-predicting NO)` : 'well calibrated'}
+`
+  }
+
+  return `You are **Kalshi Edge** performing a **HOLISTIC PORTFOLIO ANALYSIS**. Your job is to analyze the entire trading portfolio as a unit — not market by market — and find risks, opportunities, and optimizations that only become visible at the portfolio level.${calibrationSection}
+
+## Your Analysis Framework
+
+### 1. Portfolio Health Score (0–100)
+Score the overall portfolio on:
+- **Diversification** (0–25): Spread across categories, no single bet > 20% of exposure
+- **Edge Quality** (0–25): Are active positions high-confidence, well-reasoned bets?
+- **Correlation Risk** (0–25): Exposure to correlated events that could all resolve bad simultaneously
+- **Sizing Discipline** (0–25): Kelly compliance, no outsized positions
+
+### 2. Correlation Cluster Analysis
+Identify groups of positions that are likely to resolve in the same direction due to shared underlying drivers (e.g., all Fed-sensitive, all election-related, all crypto). For each cluster: name it, list positions, and quantify the concentration risk.
+
+### 3. Position-by-Position Review
+For each active position, give a brief Hold / Reduce / Exit recommendation with 1-sentence reasoning. Flag any positions where the original edge thesis may have changed.
+
+### 4. New Opportunity Alignment
+If available market opportunities are provided, identify which ones COMPLEMENT the existing portfolio (add diversification) vs which ones ADD concentrated risk. Prioritize opportunities that reduce portfolio correlation.
+
+### 5. Action Plan
+Provide a prioritized, numbered list of concrete actions. Be specific — "Reduce KXCPI-25APR-T3 to half size" not "reduce inflation exposure".
+
+## Output Format
+Use clear markdown headers. Be direct and specific. A portfolio analysis is only valuable if it drives action.`
+}
+
+export function buildPortfolioUserMessage(
+  session: SessionState,
+  opportunities: Array<{ ticker: string; title: string; direction: string; my_estimate_pct: number; market_price_pct: number; edge_pct: number; score: number; confidence: string }> = []
+): string {
+  let msg = `## Current Portfolio\n\n`
+  msg += `Bankroll: $${session.current_bankroll.toLocaleString()} (started: $${session.starting_bankroll.toLocaleString()})\n`
+  msg += `Recent win rate: ${session.recent_win_rate}\n`
+  msg += `Kelly modifier: ${session.kelly_modifier}\n\n`
+
+  if (session.positions.length === 0) {
+    msg += `**No active positions.**\n\n`
+  } else {
+    msg += `### Active Positions (${session.positions.length})\n\n`
+    session.positions.forEach((p, i) => {
+      msg += `${i + 1}. **${p.market}** — BET ${p.direction} @ $${p.avg_price.toFixed(2)}\n`
+      msg += `   Contracts: ${p.contracts} · Category: ${p.category} · Corr group: ${p.corr_group}\n`
+    })
+    msg += '\n'
+  }
+
+  if (Object.keys(session.corr_groups).length > 0) {
+    msg += `### Correlation Group Exposures\n\n`
+    Object.entries(session.corr_groups).forEach(([group, data]) => {
+      msg += `- **${group}**: ${(data.pct_of_bankroll * 100).toFixed(1)}% of bankroll (cap remaining: ${(data.cap_remaining * 100).toFixed(1)}%)\n`
+    })
+    msg += '\n'
+  }
+
+  if (opportunities.length > 0) {
+    msg += `## Available Market Opportunities (from last scan)\n\n`
+    opportunities.forEach((opp, i) => {
+      msg += `${i + 1}. **${opp.title}** [${opp.ticker}]\n`
+      msg += `   Bet ${opp.direction} · My estimate ${opp.my_estimate_pct}% vs market ${opp.market_price_pct}% · Edge ${opp.edge_pct}% · Score ${opp.score} · ${opp.confidence} confidence\n`
+    })
+    msg += '\n'
+  }
+
+  msg += `Please provide a complete portfolio analysis following the framework in your instructions.`
+  return msg
+}
+
 export function buildScannerUserMessage(
   markets: MarketInput[],
   views: MacroView[],

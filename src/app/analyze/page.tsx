@@ -45,6 +45,10 @@ export default function AnalyzePage() {
   const [result, setResult] = useState<string | null>(null)
   const [toast, setToast] = useState<Toast | null>(null)
   const [bankroll, setBankroll] = useState(10000)
+  const [thinking, setThinking] = useState('')
+  const [ultraMode, setUltraMode] = useState(false)
+  const [showThinking, setShowThinking] = useState(false)
+  const [streaming, setStreaming] = useState(false)
 
   useEffect(() => {
     // Load session for bankroll display
@@ -96,12 +100,14 @@ export default function AnalyzePage() {
 
     setLoading(true)
     setResult(null)
+    setThinking('')
+    setStreaming(false)
 
     try {
       const yesPriceNorm = normalizePrice(yesPrice)
       const noPriceNorm = noPrice ? normalizePrice(noPrice) : 1 - yesPriceNorm
 
-      const res = await fetch('/api/analyze', {
+      const res = await fetch('/api/analyze/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -115,20 +121,62 @@ export default function AnalyzePage() {
             corr_group: corrGroup || undefined,
             volume_24h: volume ? parseFloat(volume) : undefined,
           },
+          ultraMode,
         }),
       })
 
-      const data = await res.json()
-
-      if (!res.ok) {
-        throw new Error(data.error || 'Analysis failed')
+      if (!res.ok || !res.body) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error((data as any).error || 'Analysis failed')
       }
 
-      setResult(data.result)
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      let firstText = true
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+        const parts = buffer.split('\n\n')
+        buffer = parts.pop() ?? ''
+
+        for (const part of parts) {
+          const line = part.trim()
+          if (!line.startsWith('data: ')) continue
+          const jsonStr = line.slice(6)
+          let evt: any
+          try {
+            evt = JSON.parse(jsonStr)
+          } catch {
+            continue
+          }
+
+          if (evt.type === 'thinking') {
+            setThinking((prev) => prev + evt.text)
+          } else if (evt.type === 'text') {
+            if (firstText) {
+              firstText = false
+              setLoading(false)
+              setStreaming(true)
+              setResult(evt.text)
+            } else {
+              setResult((prev) => (prev ?? '') + evt.text)
+            }
+          } else if (evt.type === 'done') {
+            setStreaming(false)
+          } else if (evt.type === 'error') {
+            throw new Error(evt.message)
+          }
+        }
+      }
     } catch (err: any) {
       setToast({ message: err.message || 'Analysis failed', type: 'error' })
     } finally {
       setLoading(false)
+      setStreaming(false)
     }
   }
 
@@ -316,55 +364,129 @@ export default function AnalyzePage() {
             </div>
           </div>
 
-          {/* Analyze Button */}
-          <button
-            onClick={handleAnalyze}
-            disabled={loading || !title.trim() || !yesPrice}
-            className="w-full py-3 rounded-xl text-sm font-semibold transition-all flex items-center justify-center gap-2"
-            style={{
-              backgroundColor: loading || !title.trim() || !yesPrice ? '#2a2a3e' : '#6366f1',
-              color: loading || !title.trim() || !yesPrice ? '#64748b' : '#fff',
-              cursor: loading || !title.trim() || !yesPrice ? 'not-allowed' : 'pointer',
-            }}
-          >
-            {loading ? (
-              <>
+          {/* Analyze Button Group */}
+          <div className="flex gap-2">
+            <button
+              onClick={handleAnalyze}
+              disabled={loading || !title.trim() || !yesPrice}
+              className="flex-1 py-3 rounded-xl text-sm font-semibold transition-all flex items-center justify-center gap-2"
+              style={{
+                backgroundColor: loading || !title.trim() || !yesPrice ? '#2a2a3e' : '#6366f1',
+                color: loading || !title.trim() || !yesPrice ? '#64748b' : '#fff',
+                cursor: loading || !title.trim() || !yesPrice ? 'not-allowed' : 'pointer',
+              }}
+            >
+              {loading ? (
+                <>
+                  <svg
+                    width="16"
+                    height="16"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    className="animate-spin"
+                  >
+                    <line x1="12" y1="2" x2="12" y2="6" />
+                    <line x1="12" y1="18" x2="12" y2="22" />
+                    <line x1="4.93" y1="4.93" x2="7.76" y2="7.76" />
+                    <line x1="16.24" y1="16.24" x2="19.07" y2="19.07" />
+                    <line x1="2" y1="12" x2="6" y2="12" />
+                    <line x1="18" y1="12" x2="22" y2="12" />
+                    <line x1="4.93" y1="19.07" x2="7.76" y2="16.24" />
+                    <line x1="16.24" y1="7.76" x2="19.07" y2="4.93" />
+                  </svg>
+                  Analyzing...
+                </>
+              ) : (
+                <>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <circle cx="11" cy="11" r="8" />
+                    <line x1="21" y1="21" x2="16.65" y2="16.65" />
+                  </svg>
+                  {ultraMode ? 'Ultra Analyze' : 'Analyze Market'}
+                </>
+              )}
+            </button>
+
+            {/* Ultra Mode Toggle */}
+            <button
+              onClick={() => setUltraMode((v) => !v)}
+              disabled={loading}
+              title="Uses xhigh effort — deeper analysis, 2-3× slower"
+              className="px-4 py-3 rounded-xl text-sm font-semibold transition-all flex items-center gap-1.5"
+              style={{
+                backgroundColor: ultraMode ? 'rgba(99,102,241,0.15)' : '#1e1e2e',
+                color: ultraMode ? '#a5b4fc' : '#64748b',
+                border: `1px solid ${ultraMode ? '#6366f1' : '#2a2a3e'}`,
+                boxShadow: ultraMode ? '0 0 12px rgba(99,102,241,0.35)' : 'none',
+                cursor: loading ? 'not-allowed' : 'pointer',
+                opacity: loading ? 0.5 : 1,
+                whiteSpace: 'nowrap',
+              }}
+            >
+              ⚡ Ultra
+            </button>
+          </div>
+        </div>
+
+        {/* Right Panel — Results */}
+        <div className="space-y-4">
+          {/* Thinking Panel — shown whenever thinking text is available */}
+          {thinking.length > 0 && (
+            <div
+              className="rounded-xl border overflow-hidden"
+              style={{ backgroundColor: '#0d0d17', borderColor: '#1e1e2e', borderLeftWidth: '3px', borderLeftColor: '#6366f1' }}
+            >
+              <button
+                onClick={() => setShowThinking((v) => !v)}
+                className="w-full flex items-center justify-between px-4 py-3 text-left transition-colors"
+                style={{ color: '#94a3b8', fontSize: '13px', fontWeight: 600 }}
+              >
+                <span className="flex items-center gap-2">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#6366f1" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <circle cx="12" cy="12" r="10" />
+                    <line x1="12" y1="8" x2="12" y2="12" />
+                    <line x1="12" y1="16" x2="12.01" y2="16" />
+                  </svg>
+                  {"Claude's Reasoning"}
+                </span>
                 <svg
-                  width="16"
-                  height="16"
+                  width="14"
+                  height="14"
                   viewBox="0 0 24 24"
                   fill="none"
                   stroke="currentColor"
                   strokeWidth="2"
                   strokeLinecap="round"
                   strokeLinejoin="round"
-                  className="animate-spin"
+                  style={{ transform: showThinking ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.2s' }}
                 >
-                  <line x1="12" y1="2" x2="12" y2="6" />
-                  <line x1="12" y1="18" x2="12" y2="22" />
-                  <line x1="4.93" y1="4.93" x2="7.76" y2="7.76" />
-                  <line x1="16.24" y1="16.24" x2="19.07" y2="19.07" />
-                  <line x1="2" y1="12" x2="6" y2="12" />
-                  <line x1="18" y1="12" x2="22" y2="12" />
-                  <line x1="4.93" y1="19.07" x2="7.76" y2="16.24" />
-                  <line x1="16.24" y1="7.76" x2="19.07" y2="4.93" />
+                  <polyline points="6 9 12 15 18 9" />
                 </svg>
-                Analyzing...
-              </>
-            ) : (
-              <>
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                  <circle cx="11" cy="11" r="8" />
-                  <line x1="21" y1="21" x2="16.65" y2="16.65" />
-                </svg>
-                Analyze Market
-              </>
-            )}
-          </button>
-        </div>
+              </button>
+              {showThinking && (
+                <div
+                  className="px-4 pb-4"
+                  style={{
+                    color: '#94a3b8',
+                    fontSize: '13px',
+                    whiteSpace: 'pre-wrap',
+                    borderTop: '1px solid #1e1e2e',
+                    paddingTop: '12px',
+                    maxHeight: '300px',
+                    overflowY: 'auto',
+                  }}
+                >
+                  {thinking}
+                </div>
+              )}
+            </div>
+          )}
 
-        {/* Right Panel — Results */}
-        <div>
+          {/* Main result area */}
           {loading ? (
             <div
               className="rounded-xl border p-6"
@@ -373,20 +495,40 @@ export default function AnalyzePage() {
               <div className="flex items-center gap-3 mb-6">
                 <div className="w-2 h-2 rounded-full bg-indigo-500 animate-pulse" />
                 <span className="text-sm" style={{ color: '#94a3b8' }}>
-                  Claude is analyzing this market...
+                  {thinking.length > 0 ? 'Claude is reasoning...' : 'Claude is analyzing this market...'}
                 </span>
               </div>
               <LoadingSkeleton />
             </div>
           ) : result ? (
-            <AnalysisResult
-              markdown={result}
-              title={title}
-              ticker={ticker || undefined}
-              yesPrice={yesPriceNorm}
-              noPrice={noPrice ? normalizePrice(noPrice) : 1 - yesPriceNorm}
-              bankroll={bankroll}
-            />
+            <div className="relative">
+              <AnalysisResult
+                markdown={result}
+                title={title}
+                ticker={ticker || undefined}
+                yesPrice={yesPriceNorm}
+                noPrice={noPrice ? normalizePrice(noPrice) : 1 - yesPriceNorm}
+                bankroll={bankroll}
+              />
+              {streaming && (
+                <div
+                  className="flex items-center gap-2 mt-2 px-2"
+                  style={{ color: '#6366f1', fontSize: '12px' }}
+                >
+                  <span
+                    style={{
+                      display: 'inline-block',
+                      width: '8px',
+                      height: '8px',
+                      borderRadius: '50%',
+                      backgroundColor: '#6366f1',
+                      animation: 'pulse 1s infinite',
+                    }}
+                  />
+                  Generating...
+                </div>
+              )}
+            </div>
           ) : (
             <div
               className="rounded-xl border p-12 text-center h-full flex flex-col items-center justify-center"

@@ -6,6 +6,7 @@ import { fetchMarkets } from '@/lib/kalshi'
 import { MarketInput } from '@/lib/types'
 import { getSignalsForMarkets } from '@/lib/signals'
 import { getWebContextForMarkets } from '@/lib/search'
+import { z } from 'zod'
 
 // Maps Kalshi category strings to our 4 standard categories
 function mapCategory(kalshiCategory: string | undefined): string {
@@ -112,6 +113,32 @@ function normalizeMarket(m: any): MarketInput | null {
     category,
   }
 }
+
+const OpportunitySchema = z.object({
+  ticker: z.string(),
+  title: z.string(),
+  direction: z.enum(['YES', 'NO']),
+  my_estimate_pct: z.number().min(0).max(100),
+  market_price_pct: z.number().min(0).max(100),
+  edge_pct: z.number(),
+  score: z.number(),
+  rationale: z.string(),
+  key_risk: z.string().optional().default(''),
+  flags: z.array(z.string()),
+  confidence: z.enum(['LOW', 'MEDIUM', 'HIGH']),
+})
+
+const ScreenedOutSchema = z.object({
+  ticker: z.string(),
+  title: z.string(),
+  reason: z.string(),
+})
+
+const ScanResultSchema = z.object({
+  opportunities: z.array(OpportunitySchema),
+  screened_out: z.array(ScreenedOutSchema).default([]),
+  session_notes: z.string().optional().default(''),
+})
 
 export async function POST(req: NextRequest) {
   try {
@@ -255,12 +282,12 @@ export async function POST(req: NextRequest) {
       screened_out: [],
       session_notes: '',
     }
+    // Strip any accidental markdown fences Claude might add
+    const cleaned = rawResult.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim()
     try {
-      // Strip any accidental markdown fences Claude might add
-      const cleaned = rawResult.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim()
-      scanResult = JSON.parse(cleaned)
-    } catch {
-      // If JSON parsing fails, return error so user knows to retry
+      const parsed = JSON.parse(cleaned)
+      scanResult = ScanResultSchema.parse(parsed)
+    } catch (parseErr) {
       return NextResponse.json(
         { error: 'Claude returned an unexpected format. Please try again.' },
         { status: 500 }

@@ -2,6 +2,29 @@
 
 import { useEffect, useState } from 'react'
 
+function MarkdownRenderer({ content }: { content: string }) {
+  const html = content
+    .replace(/^#### (.+)$/gm, '<h4 style="color:#f1f5f9;font-size:0.875rem;font-weight:700;margin:1rem 0 0.25rem">$1</h4>')
+    .replace(/^### (.+)$/gm, '<h3 style="color:#e2e8f0;font-size:1rem;font-weight:700;margin:1.25rem 0 0.5rem">$1</h3>')
+    .replace(/^## (.+)$/gm, '<h2 style="color:#f1f5f9;font-size:1.125rem;font-weight:700;margin:1.5rem 0 0.5rem;padding-bottom:0.5rem;border-bottom:1px solid #1e1e2e">$1</h2>')
+    .replace(/^# (.+)$/gm, '<h1 style="color:#f1f5f9;font-size:1.25rem;font-weight:800;margin:1.5rem 0 0.5rem">$1</h1>')
+    .replace(/\*\*(.+?)\*\*/g, '<strong style="color:#e2e8f0">$1</strong>')
+    .replace(/\*(.+?)\*/g, '<em style="color:#cbd5e1">$1</em>')
+    .replace(/`([^`]+)`/g, '<code style="background:#1e1e2e;color:#a5b4fc;padding:1px 4px;border-radius:3px;font-size:0.8em">$1</code>')
+    .replace(/^\s*[-*]\s+(.+)$/gm, '<li style="margin:0.2rem 0;color:#cbd5e1">$1</li>')
+    .replace(/^\s*(\d+)\.\s+(.+)$/gm, '<li style="margin:0.2rem 0;color:#cbd5e1"><strong style="color:#94a3b8">$1.</strong> $2</li>')
+    .replace(/^---+$/gm, '<hr style="border:none;border-top:1px solid #1e1e2e;margin:1rem 0"/>')
+    .replace(/\n\n/g, '</p><p style="margin:0.5rem 0;color:#94a3b8">')
+    .replace(/^(?!<[hpliuoctrb])(.+)$/gm, '<p style="margin:0.5rem 0;color:#94a3b8">$1</p>')
+
+  return (
+    <div
+      style={{ lineHeight: '1.6', fontSize: '0.875rem' }}
+      dangerouslySetInnerHTML={{ __html: html }}
+    />
+  )
+}
+
 interface Position {
   ticker: string
   market_title: string
@@ -72,6 +95,10 @@ export default function PortfolioPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [tab, setTab] = useState<'positions' | 'settlements'>('positions')
+  const [scanResult, setScanResult] = useState<string | null>(null)
+  const [scanning, setScanning] = useState(false)
+  const [scanError, setScanError] = useState<string | null>(null)
+  const [opportunities, setOpportunities] = useState<any[]>([])
 
   const load = async () => {
     setLoading(true)
@@ -88,7 +115,37 @@ export default function PortfolioPage() {
     }
   }
 
-  useEffect(() => { load() }, [])
+  useEffect(() => {
+    load()
+    // Load last scanner opportunities from sessionStorage if available
+    try {
+      const stored = sessionStorage.getItem('last_scan_opportunities')
+      if (stored) {
+        const parsed = JSON.parse(stored)
+        if (Array.isArray(parsed)) setOpportunities(parsed)
+      }
+    } catch {}
+  }, [])
+
+  const handlePortfolioScan = async () => {
+    setScanning(true)
+    setScanResult(null)
+    setScanError(null)
+    try {
+      const res = await fetch('/api/portfolio-scan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ opportunities }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Scan failed')
+      setScanResult(data.result)
+    } catch (err: any) {
+      setScanError(err.message || 'Portfolio scan failed')
+    } finally {
+      setScanning(false)
+    }
+  }
 
   const totalPnl = data ? data.summary.total_unrealized_pnl + data.summary.total_realized_pnl : 0
   const totalPnlColor = pnlColor(totalPnl)
@@ -194,6 +251,95 @@ export default function PortfolioPage() {
               </div>
             </div>
           )}
+
+          {/* Portfolio Analysis */}
+          <div
+            className="rounded-xl border p-5"
+            style={{ backgroundColor: '#12121a', borderColor: '#1e1e2e' }}
+          >
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h2 className="text-sm font-semibold uppercase tracking-wider" style={{ color: '#94a3b8' }}>
+                  Portfolio Analysis
+                </h2>
+                {opportunities.length > 0 && (
+                  <p className="text-xs mt-0.5" style={{ color: '#475569' }}>
+                    {opportunities.length} scanner opportunities loaded
+                  </p>
+                )}
+              </div>
+              <button
+                onClick={handlePortfolioScan}
+                disabled={scanning}
+                className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold"
+                style={{
+                  backgroundColor: scanning ? '#2a2a3e' : '#6366f1',
+                  color: scanning ? '#64748b' : '#fff',
+                  cursor: scanning ? 'not-allowed' : 'pointer',
+                }}
+              >
+                {scanning ? (
+                  <>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="animate-spin">
+                      <line x1="12" y1="2" x2="12" y2="6"/><line x1="12" y1="18" x2="12" y2="22"/>
+                      <line x1="4.93" y1="4.93" x2="7.76" y2="7.76"/><line x1="16.24" y1="16.24" x2="19.07" y2="19.07"/>
+                      <line x1="2" y1="12" x2="6" y2="12"/><line x1="18" y1="12" x2="22" y2="12"/>
+                      <line x1="4.93" y1="19.07" x2="7.76" y2="16.24"/><line x1="16.24" y1="7.76" x2="19.07" y2="4.93"/>
+                    </svg>
+                    Analyzing...
+                  </>
+                ) : (
+                  <>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                    </svg>
+                    Analyze Portfolio
+                  </>
+                )}
+              </button>
+            </div>
+
+            {scanning && (
+              <div
+                className="rounded-lg p-3 flex items-center gap-3"
+                style={{ backgroundColor: '#1a1a35', border: '1px solid #6366f130' }}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#6366f1" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="animate-spin flex-shrink-0">
+                  <line x1="12" y1="2" x2="12" y2="6"/><line x1="12" y1="18" x2="12" y2="22"/>
+                  <line x1="4.93" y1="4.93" x2="7.76" y2="7.76"/><line x1="16.24" y1="16.24" x2="19.07" y2="19.07"/>
+                  <line x1="2" y1="12" x2="6" y2="12"/><line x1="18" y1="12" x2="22" y2="12"/>
+                  <line x1="4.93" y1="19.07" x2="7.76" y2="16.24"/><line x1="16.24" y1="7.76" x2="19.07" y2="4.93"/>
+                </svg>
+                <span className="text-sm" style={{ color: '#a5b4fc' }}>
+                  Claude is analyzing your portfolio...
+                </span>
+              </div>
+            )}
+
+            {scanError && (
+              <div
+                className="rounded-lg p-3 text-sm"
+                style={{ backgroundColor: '#1a0808', border: '1px solid #ef444430', color: '#ef4444' }}
+              >
+                {scanError}
+              </div>
+            )}
+
+            {scanResult && (
+              <div
+                className="rounded-lg p-4 mt-2"
+                style={{ backgroundColor: '#0d0d17', border: '1px solid #1e1e2e' }}
+              >
+                <MarkdownRenderer content={scanResult} />
+              </div>
+            )}
+
+            {!scanning && !scanResult && !scanError && (
+              <p className="text-xs" style={{ color: '#475569' }}>
+                Run a holistic analysis of your entire portfolio — correlation clusters, sizing discipline, and actionable recommendations.
+              </p>
+            )}
+          </div>
 
           {/* Tabs */}
           <div className="flex gap-1 p-1 rounded-xl w-fit" style={{ backgroundColor: '#12121a' }}>

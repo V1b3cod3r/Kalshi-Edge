@@ -8,9 +8,8 @@ import type {
 
 const client = new Anthropic();
 
-// Both calls use Haiku 4.5 by default. Summary quality on RSS excerpts is
-// solid; if you want richer prose, swap SUMMARY_MODEL to "claude-sonnet-4-6"
-// (input $3/M, output $15/M instead of $1/$5 — roughly 3x cost per pull).
+// Default models when the caller doesn't specify. Both calls accept a
+// per-request override from the UI; see scoreRelevance() / summarizeArticles().
 export const SCORING_MODEL = "claude-haiku-4-5";
 export const SUMMARY_MODEL = "claude-haiku-4-5";
 
@@ -80,6 +79,7 @@ function parseJson<T>(text: string): T {
 export async function scoreRelevance(
   candidates: { article: RawArticle; matchedInterest: string | null; score: number }[],
   interests: string[],
+  model: string = SCORING_MODEL,
 ): Promise<{ articles: ScoredArticle[]; usage: TokenUsage }> {
   const empty: TokenUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
   if (candidates.length === 0) return { articles: [], usage: empty };
@@ -104,7 +104,7 @@ export async function scoreRelevance(
   const userPayload = JSON.stringify({ interests, articles: indexed });
 
   const res = await client.messages.create({
-    model: SCORING_MODEL,
+    model,
     max_tokens: 2000,
     system: [
       { type: "text", text: RELEVANCE_SYSTEM, cache_control: { type: "ephemeral" } },
@@ -134,6 +134,7 @@ export async function scoreRelevance(
 
 export async function summarizeArticles(
   scored: ScoredArticle[],
+  model: string = SUMMARY_MODEL,
 ): Promise<{ articles: SummarizedArticle[]; usage: TokenUsage }> {
   const empty: TokenUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
   if (scored.length === 0) return { articles: [], usage: empty };
@@ -148,7 +149,7 @@ export async function summarizeArticles(
   const userPayload = JSON.stringify({ articles: indexed });
 
   const res = await client.messages.create({
-    model: SUMMARY_MODEL,
+    model,
     max_tokens: 8000,
     system: [
       { type: "text", text: SUMMARY_SYSTEM, cache_control: { type: "ephemeral" } },

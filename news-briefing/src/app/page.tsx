@@ -6,6 +6,7 @@ import { Header } from "@/components/Header";
 import { ArticleCard } from "@/components/ArticleCard";
 import { ArticleSkeleton } from "@/components/Skeleton";
 import { loadInterests } from "@/lib/interests";
+import { loadModels } from "@/lib/models";
 import type { Briefing } from "@/lib/types";
 
 function formatCost(dollars: number): string {
@@ -32,12 +33,13 @@ export default function BriefingPage() {
       return;
     }
     setEmpty(false);
+    const models = loadModels();
     const requestedAt = Date.now();
     try {
       const res = await fetch("/api/briefing", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ interests, refresh: force }),
+        body: JSON.stringify({ interests, refresh: force, models }),
       });
       if (!res.ok) throw new Error(await res.text());
       const data: Briefing = await res.json();

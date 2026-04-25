@@ -12,12 +12,24 @@ import type { Briefing } from "./types";
 const TOP_N = 15;
 const PREFILTER_POOL = 40;
 
-export async function buildBriefing(interests: string[]): Promise<Briefing> {
+export interface BriefingOptions {
+  scoringModel?: string;
+  summaryModel?: string;
+}
+
+export async function buildBriefing(
+  interests: string[],
+  options: BriefingOptions = {},
+): Promise<Briefing> {
+  const scoringModel = options.scoringModel || SCORING_MODEL;
+  const summaryModel = options.summaryModel || SUMMARY_MODEL;
+
   const all = await fetchAllArticles();
   const candidates = prefilter(all, interests, PREFILTER_POOL);
   const { articles: scored, usage: scoringUsage } = await scoreRelevance(
     candidates,
     interests,
+    scoringModel,
   );
 
   const top = [...scored]
@@ -25,10 +37,10 @@ export async function buildBriefing(interests: string[]): Promise<Briefing> {
     .slice(0, TOP_N);
 
   const { articles: summarized, usage: summaryUsage } =
-    await summarizeArticles(top);
+    await summarizeArticles(top, summaryModel);
 
-  const scoringCost = costFor(SCORING_MODEL, scoringUsage);
-  const summaryCost = costFor(SUMMARY_MODEL, summaryUsage);
+  const scoringCost = costFor(scoringModel, scoringUsage);
+  const summaryCost = costFor(summaryModel, summaryUsage);
 
   return {
     generatedAt: new Date().toISOString(),
@@ -41,8 +53,8 @@ export async function buildBriefing(interests: string[]): Promise<Briefing> {
       total: scoringCost + summaryCost,
       scoringUsage,
       summaryUsage,
-      scoringModel: SCORING_MODEL,
-      summaryModel: SUMMARY_MODEL,
+      scoringModel,
+      summaryModel,
     },
   };
 }

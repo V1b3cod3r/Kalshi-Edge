@@ -3,16 +3,26 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Header } from "@/components/Header";
+import { ModelPicker } from "@/components/ModelPicker";
 import { DEFAULT_INTERESTS, loadInterests, saveInterests } from "@/lib/interests";
+import {
+  DEFAULT_MODELS,
+  loadModels,
+  saveModels,
+  type ModelChoice,
+  type ModelId,
+} from "@/lib/models";
 
 export default function SettingsPage() {
   const router = useRouter();
   const [interests, setInterests] = useState<string[]>([]);
   const [draft, setDraft] = useState("");
+  const [models, setModels] = useState<ModelChoice>(DEFAULT_MODELS);
   const [hydrated, setHydrated] = useState(false);
 
   useEffect(() => {
     setInterests(loadInterests());
+    setModels(loadModels());
     setHydrated(true);
   }, []);
 
@@ -38,6 +48,18 @@ export default function SettingsPage() {
   function resetDefaults() {
     setInterests(DEFAULT_INTERESTS);
     saveInterests(DEFAULT_INTERESTS);
+  }
+
+  function setScoring(id: ModelId) {
+    const next = { ...models, scoring: id };
+    setModels(next);
+    saveModels(next);
+  }
+
+  function setSummary(id: ModelId) {
+    const next = { ...models, summary: id };
+    setModels(next);
+    saveModels(next);
   }
 
   async function logout() {
@@ -116,6 +138,22 @@ export default function SettingsPage() {
             </ul>
           )}
         </section>
+
+        <ModelPicker
+          title="Relevance scoring"
+          description="Ranks each candidate article against your interests. Cheap calls; Haiku is plenty here."
+          costField="scoringCostHint"
+          value={models.scoring}
+          onChange={setScoring}
+        />
+
+        <ModelPicker
+          title="Summaries"
+          description="Writes the 6–8 sentence summary for each article. Sonnet writes more elegant prose; Haiku is 3× cheaper."
+          costField="summaryCostHint"
+          value={models.summary}
+          onChange={setSummary}
+        />
 
         <section className="rounded-2xl bg-surface shadow-card p-6 sm:p-7">
           <button

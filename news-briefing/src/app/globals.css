@@ -1,0 +1,32 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+  body {
+    @apply bg-surface-tint text-ink font-sans;
+    font-feature-settings: "ss01", "cv11";
+  }
+  ::selection {
+    @apply bg-accent/15 text-ink;
+  }
+}
+
+@layer utilities {
+  .container-narrow {
+    @apply mx-auto w-full max-w-[680px] px-5 sm:px-8;
+  }
+  .pressable {
+    transition: transform 150ms cubic-bezier(0.2, 0.8, 0.2, 1),
+      opacity 150ms ease;
+  }
+  .pressable:active {
+    transform: scale(0.98);
+    opacity: 0.85;
+  }
+}

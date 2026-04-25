@@ -1,10 +1,44 @@
 import Anthropic from "@anthropic-ai/sdk";
-import type { RawArticle, ScoredArticle, SummarizedArticle } from "./types";
+import type {
+  RawArticle,
+  ScoredArticle,
+  SummarizedArticle,
+  TokenUsage,
+} from "./types";
 
 const client = new Anthropic();
 
 const HAIKU = "claude-haiku-4-5";
 const SONNET = "claude-sonnet-4-6";
+
+// $ per million tokens, input price (output is computed separately)
+export const PRICING = {
+  haiku: { input: 1.0, output: 5.0 },
+  sonnet: { input: 3.0, output: 15.0 },
+};
+
+export function costFor(
+  model: keyof typeof PRICING,
+  usage: TokenUsage,
+): number {
+  const p = PRICING[model];
+  const M = 1_000_000;
+  return (
+    (usage.input * p.input) / M +
+    (usage.output * p.output) / M +
+    (usage.cacheRead * p.input * 0.1) / M +
+    (usage.cacheWrite * p.input * 1.25) / M
+  );
+}
+
+function readUsage(res: Anthropic.Message): TokenUsage {
+  return {
+    input: res.usage.input_tokens ?? 0,
+    output: res.usage.output_tokens ?? 0,
+    cacheRead: res.usage.cache_read_input_tokens ?? 0,
+    cacheWrite: res.usage.cache_creation_input_tokens ?? 0,
+  };
+}
 
 const RELEVANCE_SYSTEM = `You are a news curator. Given a user's interests and a list of news article excerpts, score each article 0-10 for how well it matches any of the interests. Return strict JSON only.
 
@@ -44,14 +78,18 @@ function parseJson<T>(text: string): T {
 export async function scoreRelevance(
   candidates: { article: RawArticle; matchedInterest: string | null; score: number }[],
   interests: string[],
-): Promise<ScoredArticle[]> {
-  if (candidates.length === 0) return [];
+): Promise<{ articles: ScoredArticle[]; usage: TokenUsage }> {
+  const empty: TokenUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+  if (candidates.length === 0) return { articles: [], usage: empty };
   if (interests.length === 0) {
-    return candidates.map((c) => ({
-      ...c.article,
-      score: 0,
-      matchedInterest: null,
-    }));
+    return {
+      articles: candidates.map((c) => ({
+        ...c.article,
+        score: 0,
+        matchedInterest: null,
+      })),
+      usage: empty,
+    };
   }
 
   const indexed = candidates.map((c, i) => ({
@@ -65,7 +103,7 @@ export async function scoreRelevance(
 
   const res = await client.messages.create({
     model: HAIKU,
-    max_tokens: 1500,
+    max_tokens: 2000,
     system: [
       { type: "text", text: RELEVANCE_SYSTEM, cache_control: { type: "ephemeral" } },
     ],
@@ -80,7 +118,7 @@ export async function scoreRelevance(
   const parsed = parseJson<ScoreResult>(text);
   const byId = new Map(parsed.scores.map((s) => [s.id, s]));
 
-  return candidates.map((c, i) => {
+  const articles = candidates.map((c, i) => {
     const s = byId.get(i);
     return {
       ...c.article,
@@ -88,12 +126,15 @@ export async function scoreRelevance(
       matchedInterest: s?.interest && s.interest.length > 0 ? s.interest : null,
     };
   });
+
+  return { articles, usage: readUsage(res) };
 }
 
 export async function summarizeArticles(
   scored: ScoredArticle[],
-): Promise<SummarizedArticle[]> {
-  if (scored.length === 0) return [];
+): Promise<{ articles: SummarizedArticle[]; usage: TokenUsage }> {
+  const empty: TokenUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+  if (scored.length === 0) return { articles: [], usage: empty };
 
   const indexed = scored.map((a, i) => ({
     id: i,
@@ -106,7 +147,7 @@ export async function summarizeArticles(
 
   const res = await client.messages.create({
     model: SONNET,
-    max_tokens: 4000,
+    max_tokens: 8000,
     system: [
       { type: "text", text: SUMMARY_SYSTEM, cache_control: { type: "ephemeral" } },
     ],
@@ -121,8 +162,10 @@ export async function summarizeArticles(
   const parsed = parseJson<SummaryResult>(text);
   const byId = new Map(parsed.summaries.map((s) => [s.id, s.summary]));
 
-  return scored.map((a, i) => ({
+  const articles = scored.map((a, i) => ({
     ...a,
     summary: byId.get(i) ?? "Summary unavailable.",
   }));
+
+  return { articles, usage: readUsage(res) };
 }

@@ -1,5 +1,5 @@
 import { createHash } from "crypto";
-import { unstable_cache } from "next/cache";
+import { unstable_cache, revalidateTag } from "next/cache";
 import { buildBriefing } from "./briefing";
 import type { Briefing } from "./types";
 
@@ -16,8 +16,12 @@ function todayKey(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
-export async function getCachedBriefing(interests: string[]): Promise<Briefing> {
+export async function getCachedBriefing(
+  interests: string[],
+  force = false,
+): Promise<Briefing> {
   const key = `briefing-${todayKey()}-${hashInterests(interests)}`;
+  if (force) revalidateTag(key);
   const fetcher = unstable_cache(
     async () => buildBriefing(interests),
     [key],

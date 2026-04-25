@@ -5,7 +5,7 @@ export const runtime = "nodejs";
 export const maxDuration = 60;
 
 export async function POST(req: NextRequest) {
-  let body: { interests?: unknown };
+  let body: { interests?: unknown; refresh?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -20,8 +20,10 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "too many interests" }, { status: 400 });
   }
 
+  const force = body.refresh === true;
+
   try {
-    const briefing = await getCachedBriefing(interests);
+    const briefing = await getCachedBriefing(interests, force);
     return NextResponse.json(briefing);
   } catch (err) {
     const message = err instanceof Error ? err.message : "unknown error";

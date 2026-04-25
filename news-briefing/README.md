@@ -35,6 +35,16 @@ npm run dev
 
 Open <http://localhost:3000>. Log in with `APP_PASSWORD`.
 
+## Verifying RSS feeds
+
+If a source isn't showing up, run the feed diagnostic to see exactly which URLs return content and which are blocked, dormant, or rejecting your User-Agent:
+
+```bash
+npm run test-feeds
+```
+
+This prints a table per feed: HTTP status, total items in the XML, items inside the recency window, and the age of the newest article. Drop dead URLs from `src/lib/sources.ts`.
+
 Generate a strong `AUTH_SECRET` with:
 
 ```bash

@@ -1,9 +1,21 @@
-export type SourceId = "wsj" | "ft" | "economist";
+export type SourceId =
+  | "wsj"
+  | "ft"
+  | "economist"
+  | "reuters"
+  | "bloomberg"
+  | "axios"
+  | "semafor"
+  | "nyt"
+  | "politico"
+  | "fed";
 
 export interface SourceFeed {
   id: SourceId;
   name: string;
   url: string;
+  /** How recent an article must be to qualify. Daily wires use 36h; weeklies (Economist) use 168h (7 days). */
+  recencyHours: number;
 }
 
 export interface RawArticle {

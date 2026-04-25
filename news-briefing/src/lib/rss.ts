@@ -8,6 +8,11 @@ const parser = new XMLParser({
   textNodeName: "#text",
 });
 
+// Feed-reader-style UA — many publishers 403 unknown bots but allow
+// well-formed reader UAs. Mozilla prefix is the convention.
+const UA =
+  "Mozilla/5.0 (compatible; news-briefing/1.0; +https://github.com/v1b3cod3r/kalshi-edge)";
+
 function stripHtml(s: string): string {
   return s
     .replace(/<[^>]+>/g, " ")
@@ -30,9 +35,9 @@ function asText(v: unknown): string {
   return String(v);
 }
 
-async function fetchFeed(feed: SourceFeed): Promise<RawArticle[]> {
+export async function fetchFeed(feed: SourceFeed): Promise<RawArticle[]> {
   const res = await fetch(feed.url, {
-    headers: { "User-Agent": "news-briefing/0.1 (+rss reader)" },
+    headers: { "User-Agent": UA, Accept: "application/rss+xml, application/xml, text/xml" },
     next: { revalidate: 1800 },
   });
   if (!res.ok) return [];
@@ -40,6 +45,8 @@ async function fetchFeed(feed: SourceFeed): Promise<RawArticle[]> {
   const parsed = parser.parse(xml);
   const items = parsed?.rss?.channel?.item ?? parsed?.feed?.entry ?? [];
   const list = Array.isArray(items) ? items : [items];
+
+  const cutoff = Date.now() - feed.recencyHours * 60 * 60 * 1000;
 
   return list.flatMap((item: Record<string, unknown>): RawArticle[] => {
     const title = stripHtml(asText(item.title));
@@ -53,8 +60,14 @@ async function fetchFeed(feed: SourceFeed): Promise<RawArticle[]> {
         : Array.isArray(linkRaw)
           ? asText(linkRaw[0])
           : asText((linkRaw as Record<string, unknown>)?.["@_href"] ?? linkRaw);
-    const publishedAt = asText(item.pubDate ?? item.published ?? item.updated ?? "");
+    const publishedAt = asText(
+      item.pubDate ?? item.published ?? item.updated ?? item["dc:date"] ?? "",
+    );
     if (!title || !link) return [];
+
+    const t = Date.parse(publishedAt);
+    if (!Number.isNaN(t) && t < cutoff) return [];
+
     return [
       {
         source: feed.id,
@@ -80,14 +93,8 @@ function dedupe(articles: RawArticle[]): RawArticle[] {
   return out;
 }
 
-function within24h(a: RawArticle): boolean {
-  const t = Date.parse(a.publishedAt);
-  if (Number.isNaN(t)) return true;
-  return Date.now() - t < 36 * 60 * 60 * 1000;
-}
-
 export async function fetchAllArticles(): Promise<RawArticle[]> {
   const results = await Promise.allSettled(SOURCES.map(fetchFeed));
   const all = results.flatMap((r) => (r.status === "fulfilled" ? r.value : []));
-  return dedupe(all).filter(within24h);
+  return dedupe(all);
 }

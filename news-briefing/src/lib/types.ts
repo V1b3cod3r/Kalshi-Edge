@@ -6,13 +6,14 @@ export type SourceId =
   | "nyt"
   | "politico"
   | "fed"
-  | "treasury"
   | "cnbc"
   | "marketwatch"
   | "bbc"
   | "guardian"
   | "mr"
-  | "stratechery";
+  | "verge"
+  | "techcrunch"
+  | "importai";
 
 export interface SourceFeed {
   id: SourceId;

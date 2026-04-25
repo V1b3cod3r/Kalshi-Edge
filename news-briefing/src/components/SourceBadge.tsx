@@ -8,13 +8,14 @@ const COLORS: Record<SourceId, string> = {
   nyt: "bg-white text-[#121212] border border-[#121212]",
   politico: "bg-[#cf202f] text-white",
   fed: "bg-[#04304a] text-white",
-  treasury: "bg-[#003c30] text-white",
   cnbc: "bg-[#0073e6] text-white",
   marketwatch: "bg-[#00ac4a] text-white",
   bbc: "bg-[#bb1919] text-white",
   guardian: "bg-[#052962] text-white",
   mr: "bg-[#3a3a3c] text-white",
-  stratechery: "bg-black text-white",
+  verge: "bg-[#5200ff] text-white",
+  techcrunch: "bg-[#0a9b00] text-white",
+  importai: "bg-[#1a2540] text-white",
 };
 
 const LABELS: Record<SourceId, string> = {
@@ -25,13 +26,14 @@ const LABELS: Record<SourceId, string> = {
   nyt: "NYT",
   politico: "Politico",
   fed: "Fed",
-  treasury: "Treasury",
   cnbc: "CNBC",
   marketwatch: "MarketWatch",
   bbc: "BBC",
   guardian: "Guardian",
   mr: "MR",
-  stratechery: "Stratechery",
+  verge: "The Verge",
+  techcrunch: "TechCrunch",
+  importai: "Import AI",
 };
 
 export function SourceBadge({ source }: { source: SourceId }) {

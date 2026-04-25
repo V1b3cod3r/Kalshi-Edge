@@ -93,13 +93,6 @@ export const SOURCES: SourceFeed[] = [
     url: "https://www.federalreserve.gov/feeds/speeches.xml",
     recencyHours: WEEKLY,
   },
-  // US Treasury — official policy and statements
-  {
-    id: "treasury",
-    name: "US Treasury",
-    url: "https://home.treasury.gov/rss/press-releases",
-    recencyHours: WEEKLY,
-  },
   // New York Times
   {
     id: "nyt",
@@ -161,11 +154,25 @@ export const SOURCES: SourceFeed[] = [
     url: "https://marginalrevolution.com/feed",
     recencyHours: DAILY,
   },
-  // Stratechery — Ben Thompson, weekly free post on tech/AI strategy
+  // The Verge — broad tech with strong AI coverage
   {
-    id: "stratechery",
-    name: "Stratechery",
-    url: "https://stratechery.com/feed/free/",
+    id: "verge",
+    name: "The Verge",
+    url: "https://www.theverge.com/rss/index.xml",
+    recencyHours: DAILY,
+  },
+  // TechCrunch — startups and AI venture coverage
+  {
+    id: "techcrunch",
+    name: "TechCrunch",
+    url: "https://techcrunch.com/feed/",
+    recencyHours: DAILY,
+  },
+  // Import AI — Jack Clark's weekly AI newsletter (high signal)
+  {
+    id: "importai",
+    name: "Import AI",
+    url: "https://importai.substack.com/feed",
     recencyHours: WEEKLY,
   },
 ];

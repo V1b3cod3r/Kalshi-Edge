@@ -2,13 +2,17 @@ export type SourceId =
   | "wsj"
   | "ft"
   | "economist"
-  | "reuters"
   | "bloomberg"
-  | "axios"
-  | "semafor"
   | "nyt"
   | "politico"
-  | "fed";
+  | "fed"
+  | "treasury"
+  | "cnbc"
+  | "marketwatch"
+  | "bbc"
+  | "guardian"
+  | "mr"
+  | "stratechery";
 
 export interface SourceFeed {
   id: SourceId;

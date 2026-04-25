@@ -32,11 +32,13 @@ export interface TokenUsage {
 }
 
 export interface CostBreakdown {
-  haiku: number;
-  sonnet: number;
+  scoring: number;
+  summary: number;
   total: number;
-  haikuUsage: TokenUsage;
-  sonnetUsage: TokenUsage;
+  scoringUsage: TokenUsage;
+  summaryUsage: TokenUsage;
+  scoringModel: string;
+  summaryModel: string;
 }
 
 export interface Briefing {

@@ -20,7 +20,7 @@ export async function getCachedBriefing(
   interests: string[],
   force = false,
 ): Promise<Briefing> {
-  const key = `briefing-${todayKey()}-${hashInterests(interests)}`;
+  const key = `briefing-v2-${todayKey()}-${hashInterests(interests)}`;
   if (force) revalidateTag(key);
   const fetcher = unstable_cache(
     async () => buildBriefing(interests),

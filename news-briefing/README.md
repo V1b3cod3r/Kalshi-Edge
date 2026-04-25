@@ -4,10 +4,10 @@ A daily news briefing curated from WSJ, FT, and The Economist, summarized by Cla
 
 - **Stack**: Next.js 15 (App Router) + Tailwind + TypeScript
 - **Content**: Public RSS feeds (no scraping, no logins)
-- **AI**: Anthropic Claude (Haiku 4.5 for relevance scoring, Sonnet 4.6 for summaries)
+- **AI**: Anthropic Claude (Haiku 4.5 for both scoring and summaries by default)
 - **Hosting**: Vercel free tier
 - **Auth**: Single shared password
-- **Cost**: ~$1/month at one daily briefing
+- **Cost**: ~$0.015 per fresh pull, ~$0.50/month at one daily briefing. Swap `SUMMARY_MODEL` in `src/lib/claude.ts` to `claude-sonnet-4-6` for richer prose at ~3x cost.
 
 ---
 
@@ -15,11 +15,11 @@ A daily news briefing curated from WSJ, FT, and The Economist, summarized by Cla
 
 1. **Fetch** RSS feeds from WSJ, FT, Economist (cached 30 min, free)
 2. **Pre-filter** with keyword matching against your interests (free)
-3. **Score** the top ~30 candidates with one Haiku 4.5 call (~$0.005)
-4. **Summarize** the top 8 with one Sonnet 4.6 call (~$0.03)
+3. **Score** the top ~40 candidates with one Haiku 4.5 call (~$0.005)
+4. **Summarize** the top 15 with one Haiku 4.5 call (~$0.010)
 5. **Cache** the result for the day, keyed by date + interests hash, so refreshing costs nothing
 
-Total: roughly two LLM calls per day per interest configuration.
+Total: two LLM calls per fresh pull. The refresh button bypasses the cache; otherwise refreshes the same day are free.
 
 ---
 

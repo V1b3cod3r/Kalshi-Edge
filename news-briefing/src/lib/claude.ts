@@ -8,20 +8,22 @@ import type {
 
 const client = new Anthropic();
 
-const HAIKU = "claude-haiku-4-5";
-const SONNET = "claude-sonnet-4-6";
+// Both calls use Haiku 4.5 by default. Summary quality on RSS excerpts is
+// solid; if you want richer prose, swap SUMMARY_MODEL to "claude-sonnet-4-6"
+// (input $3/M, output $15/M instead of $1/$5 — roughly 3x cost per pull).
+export const SCORING_MODEL = "claude-haiku-4-5";
+export const SUMMARY_MODEL = "claude-haiku-4-5";
 
-// $ per million tokens, input price (output is computed separately)
-export const PRICING = {
-  haiku: { input: 1.0, output: 5.0 },
-  sonnet: { input: 3.0, output: 15.0 },
+// $ per million tokens
+export const PRICING: Record<string, { input: number; output: number }> = {
+  "claude-haiku-4-5": { input: 1.0, output: 5.0 },
+  "claude-sonnet-4-6": { input: 3.0, output: 15.0 },
+  "claude-opus-4-7": { input: 5.0, output: 25.0 },
 };
 
-export function costFor(
-  model: keyof typeof PRICING,
-  usage: TokenUsage,
-): number {
+export function costFor(model: string, usage: TokenUsage): number {
   const p = PRICING[model];
+  if (!p) return 0;
   const M = 1_000_000;
   return (
     (usage.input * p.input) / M +
@@ -102,7 +104,7 @@ export async function scoreRelevance(
   const userPayload = JSON.stringify({ interests, articles: indexed });
 
   const res = await client.messages.create({
-    model: HAIKU,
+    model: SCORING_MODEL,
     max_tokens: 2000,
     system: [
       { type: "text", text: RELEVANCE_SYSTEM, cache_control: { type: "ephemeral" } },
@@ -140,13 +142,13 @@ export async function summarizeArticles(
     id: i,
     source: a.sourceName,
     title: a.title,
-    excerpt: a.excerpt,
+    excerpt: a.excerpt.slice(0, 400),
   }));
 
   const userPayload = JSON.stringify({ articles: indexed });
 
   const res = await client.messages.create({
-    model: SONNET,
+    model: SUMMARY_MODEL,
     max_tokens: 8000,
     system: [
       { type: "text", text: SUMMARY_SYSTEM, cache_control: { type: "ephemeral" } },

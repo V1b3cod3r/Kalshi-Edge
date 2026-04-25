@@ -1,6 +1,12 @@
 import { fetchAllArticles } from "./rss";
 import { prefilter } from "./prefilter";
-import { scoreRelevance, summarizeArticles, costFor } from "./claude";
+import {
+  scoreRelevance,
+  summarizeArticles,
+  costFor,
+  SCORING_MODEL,
+  SUMMARY_MODEL,
+} from "./claude";
 import type { Briefing } from "./types";
 
 const TOP_N = 15;
@@ -9,7 +15,7 @@ const PREFILTER_POOL = 40;
 export async function buildBriefing(interests: string[]): Promise<Briefing> {
   const all = await fetchAllArticles();
   const candidates = prefilter(all, interests, PREFILTER_POOL);
-  const { articles: scored, usage: haikuUsage } = await scoreRelevance(
+  const { articles: scored, usage: scoringUsage } = await scoreRelevance(
     candidates,
     interests,
   );
@@ -18,11 +24,11 @@ export async function buildBriefing(interests: string[]): Promise<Briefing> {
     .sort((a, b) => b.score - a.score)
     .slice(0, TOP_N);
 
-  const { articles: summarized, usage: sonnetUsage } =
+  const { articles: summarized, usage: summaryUsage } =
     await summarizeArticles(top);
 
-  const haikuCost = costFor("haiku", haikuUsage);
-  const sonnetCost = costFor("sonnet", sonnetUsage);
+  const scoringCost = costFor(SCORING_MODEL, scoringUsage);
+  const summaryCost = costFor(SUMMARY_MODEL, summaryUsage);
 
   return {
     generatedAt: new Date().toISOString(),
@@ -30,11 +36,13 @@ export async function buildBriefing(interests: string[]): Promise<Briefing> {
     interests,
     articles: summarized,
     cost: {
-      haiku: haikuCost,
-      sonnet: sonnetCost,
-      total: haikuCost + sonnetCost,
-      haikuUsage,
-      sonnetUsage,
+      scoring: scoringCost,
+      summary: summaryCost,
+      total: scoringCost + summaryCost,
+      scoringUsage,
+      summaryUsage,
+      scoringModel: SCORING_MODEL,
+      summaryModel: SUMMARY_MODEL,
     },
   };
 }

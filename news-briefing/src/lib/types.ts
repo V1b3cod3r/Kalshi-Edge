@@ -10,10 +10,7 @@ export type SourceId =
   | "marketwatch"
   | "bbc"
   | "guardian"
-  | "mr"
-  | "verge"
-  | "techcrunch"
-  | "importai";
+  | "mr";
 
 export interface SourceFeed {
   id: SourceId;

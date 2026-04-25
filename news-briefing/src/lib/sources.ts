@@ -154,25 +154,4 @@ export const SOURCES: SourceFeed[] = [
     url: "https://marginalrevolution.com/feed",
     recencyHours: DAILY,
   },
-  // The Verge — broad tech with strong AI coverage
-  {
-    id: "verge",
-    name: "The Verge",
-    url: "https://www.theverge.com/rss/index.xml",
-    recencyHours: DAILY,
-  },
-  // TechCrunch — startups and AI venture coverage
-  {
-    id: "techcrunch",
-    name: "TechCrunch",
-    url: "https://techcrunch.com/feed/",
-    recencyHours: DAILY,
-  },
-  // Import AI — Jack Clark's weekly AI newsletter (high signal)
-  {
-    id: "importai",
-    name: "Import AI",
-    url: "https://importai.substack.com/feed",
-    recencyHours: WEEKLY,
-  },
 ];

@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 
 const COOKIE_NAME = "nb_auth";
+const MAX_AGE_MS = 60 * 60 * 24 * 30 * 1000;
 
 function hexToBytes(hex: string): Uint8Array | null {
   if (hex.length % 2 !== 0) return null;
@@ -43,7 +44,10 @@ async function verify(token: string | undefined, secret: string): Promise<boolea
     ["sign"],
   );
   const expected = await crypto.subtle.sign("HMAC", key, enc.encode(payload));
-  return constantTimeEqual(sig, bytesToHex(new Uint8Array(expected)));
+  if (!constantTimeEqual(sig, bytesToHex(new Uint8Array(expected)))) return false;
+  const issued = Number(payload);
+  if (!Number.isFinite(issued)) return false;
+  return Date.now() - issued < MAX_AGE_MS;
 }
 
 export async function middleware(req: NextRequest) {

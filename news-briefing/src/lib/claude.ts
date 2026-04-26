@@ -22,7 +22,7 @@ export const PRICING: Record<string, { input: number; output: number }> = {
 
 export function costFor(model: string, usage: TokenUsage): number {
   const p = PRICING[model];
-  if (!p) return 0;
+  if (!p) throw new Error(`No pricing entry for model "${model}". Add it to PRICING in claude.ts.`);
   const M = 1_000_000;
   return (
     (usage.input * p.input) / M +

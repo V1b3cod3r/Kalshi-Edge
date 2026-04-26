@@ -16,22 +16,22 @@ export const MODELS: ModelOption[] = [
     id: "claude-haiku-4-5",
     name: "Haiku 4.5",
     blurb: "Fast and cheap. Default.",
-    scoringCostHint: "~$0.005 per pull",
-    summaryCostHint: "~$0.010 per pull",
+    scoringCostHint: "~$0.006 per pull",
+    summaryCostHint: "~$0.017 per pull",
   },
   {
     id: "claude-sonnet-4-6",
     name: "Sonnet 4.6",
     blurb: "Better prose, slower, ~3× the cost.",
-    scoringCostHint: "~$0.020 per pull",
-    summaryCostHint: "~$0.035 per pull",
+    scoringCostHint: "~$0.018 per pull",
+    summaryCostHint: "~$0.051 per pull",
   },
   {
     id: "claude-opus-4-7",
     name: "Opus 4.7",
     blurb: "Most capable. Overkill for summaries.",
-    scoringCostHint: "~$0.035 per pull",
-    summaryCostHint: "~$0.060 per pull",
+    scoringCostHint: "~$0.030 per pull",
+    summaryCostHint: "~$0.085 per pull",
   },
 ];
 

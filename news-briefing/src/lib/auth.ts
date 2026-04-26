@@ -25,7 +25,10 @@ export function verifyToken(token: string | undefined): boolean {
   if (!payload || !sig) return false;
   const expected = sign(payload);
   if (sig.length !== expected.length) return false;
-  return timingSafeEqual(Buffer.from(sig, "hex"), Buffer.from(expected, "hex"));
+  if (!timingSafeEqual(Buffer.from(sig, "hex"), Buffer.from(expected, "hex"))) return false;
+  const issued = Number(payload);
+  if (!Number.isFinite(issued)) return false;
+  return Date.now() - issued < MAX_AGE_SECONDS * 1000;
 }
 
 export function checkPassword(submitted: string): boolean {

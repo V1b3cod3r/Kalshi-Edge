@@ -2,6 +2,7 @@
 
 import { Suspense, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import type { Route } from "next";
 
 function LoginForm() {
   const router = useRouter();
@@ -26,7 +27,7 @@ function LoginForm() {
         setSubmitting(false);
         return;
       }
-      router.replace(from);
+      router.replace(from as Route);
     } catch {
       setError("Couldn't reach the server.");
       setSubmitting(false);

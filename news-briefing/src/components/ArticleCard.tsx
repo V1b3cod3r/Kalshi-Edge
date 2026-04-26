@@ -66,7 +66,7 @@ export function ArticleCard({ article, read, onOpen }: ArticleCardProps) {
                   target="_blank"
                   rel="noopener noreferrer"
                   onClick={() => onOpen(r.link)}
-                  className="pressable text-[13px] text-ink-soft hover:text-accent hover:underline truncate"
+                  className="pressable min-w-0 flex-1 text-[13px] text-ink-soft hover:text-accent hover:underline truncate"
                   title={r.title}
                 >
                   {r.title}

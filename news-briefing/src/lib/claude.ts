@@ -191,11 +191,20 @@ export async function clusterArticles(
   const seen = new Set<number>();
   const clusters: number[][] = [];
   for (const group of parsed.clusters) {
-    const valid = group.filter(
-      (id) => Number.isInteger(id) && id >= 0 && id < articles.length && !seen.has(id),
-    );
+    const valid: number[] = [];
+    for (const id of group) {
+      if (
+        !Number.isInteger(id) ||
+        id < 0 ||
+        id >= articles.length ||
+        seen.has(id)
+      ) {
+        continue;
+      }
+      seen.add(id);
+      valid.push(id);
+    }
     if (valid.length === 0) continue;
-    valid.forEach((id) => seen.add(id));
     clusters.push(valid);
   }
   // Defensive: anything the model dropped becomes its own cluster.

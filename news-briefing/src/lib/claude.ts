@@ -2,14 +2,14 @@ import Anthropic from "@anthropic-ai/sdk";
 import type {
   RawArticle,
   ScoredArticle,
-  SummarizedArticle,
   TokenUsage,
 } from "./types";
 
 const client = new Anthropic();
 
-// Default models when the caller doesn't specify. Both calls accept a
-// per-request override from the UI; see scoreRelevance() / summarizeArticles().
+// Default models when the caller doesn't specify. All three calls accept a
+// per-request override from the UI; see scoreRelevance() / clusterArticles() /
+// summarizeArticles().
 export const SCORING_MODEL = "claude-haiku-4-5";
 export const SUMMARY_MODEL = "claude-haiku-4-5";
 
@@ -19,6 +19,8 @@ export const PRICING: Record<string, { input: number; output: number }> = {
   "claude-sonnet-4-6": { input: 3.0, output: 15.0 },
   "claude-opus-4-7": { input: 5.0, output: 25.0 },
 };
+
+const EMPTY_USAGE: TokenUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 
 export function costFor(model: string, usage: TokenUsage): number {
   const p = PRICING[model];
@@ -41,6 +43,13 @@ function readUsage(res: Anthropic.Message): TokenUsage {
   };
 }
 
+function textOf(res: Anthropic.Message): string {
+  return res.content
+    .filter((b) => b.type === "text")
+    .map((b) => (b as { text: string }).text)
+    .join("");
+}
+
 const RELEVANCE_SYSTEM = `You are a news curator. Given a user's interests and a list of news article excerpts, score each article 0-10 for how well it matches any of the interests. Return strict JSON only.
 
 Scoring guidance:
@@ -50,6 +59,14 @@ Scoring guidance:
 - 0-2: unrelated
 
 Return JSON of the form: {"scores":[{"id":<number>,"score":<0-10>,"interest":"<matched interest or empty string>"}]}`;
+
+const CLUSTER_SYSTEM = `You group news articles by underlying news event. Two articles belong in the same cluster if they cover the same underlying story (same event, same announcement, same actors, same day) — even if the angles or framings differ.
+
+Be conservative: do NOT merge two articles that just share a topic ("AI" or "the Fed") but are about different events. Only merge true duplicates of the same story.
+
+Each article id must appear in exactly one cluster. Singleton clusters (one article on its own) are normal and expected.
+
+Return strict JSON only, in the form: {"clusters":[[<id>,<id>,...],[<id>],...]}`;
 
 const SUMMARY_SYSTEM = `You are a senior news editor writing a daily briefing. For each article excerpt provided, write a 6-8 sentence summary that:
 - Opens with the most newsworthy fact, not the source
@@ -62,6 +79,10 @@ Return strict JSON only, in the form: {"summaries":[{"id":<number>,"summary":"<6
 
 interface ScoreResult {
   scores: { id: number; score: number; interest: string }[];
+}
+
+interface ClusterResult {
+  clusters: number[][];
 }
 
 interface SummaryResult {
@@ -81,8 +102,7 @@ export async function scoreRelevance(
   interests: string[],
   model: string = SCORING_MODEL,
 ): Promise<{ articles: ScoredArticle[]; usage: TokenUsage }> {
-  const empty: TokenUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
-  if (candidates.length === 0) return { articles: [], usage: empty };
+  if (candidates.length === 0) return { articles: [], usage: EMPTY_USAGE };
   if (interests.length === 0) {
     return {
       articles: candidates.map((c) => ({
@@ -90,7 +110,7 @@ export async function scoreRelevance(
         score: 0,
         matchedInterest: null,
       })),
-      usage: empty,
+      usage: EMPTY_USAGE,
     };
   }
 
@@ -112,12 +132,7 @@ export async function scoreRelevance(
     messages: [{ role: "user", content: userPayload }],
   });
 
-  const text = res.content
-    .filter((b) => b.type === "text")
-    .map((b) => (b as { text: string }).text)
-    .join("");
-
-  const parsed = parseJson<ScoreResult>(text);
+  const parsed = parseJson<ScoreResult>(textOf(res));
   const byId = new Map(parsed.scores.map((s) => [s.id, s]));
 
   const articles = candidates.map((c, i) => {
@@ -132,12 +147,70 @@ export async function scoreRelevance(
   return { articles, usage: readUsage(res) };
 }
 
+/**
+ * Group articles that cover the same news event. Returns clusters as arrays
+ * of input indices. Each input index appears in exactly one cluster (the
+ * model is instructed to do so; this function defensively backfills any
+ * missing ids as singletons).
+ */
+export async function clusterArticles(
+  articles: ScoredArticle[],
+  model: string = SCORING_MODEL,
+): Promise<{ clusters: number[][]; usage: TokenUsage }> {
+  if (articles.length <= 1) {
+    return { clusters: articles.map((_, i) => [i]), usage: EMPTY_USAGE };
+  }
+
+  const indexed = articles.map((a, i) => ({
+    id: i,
+    source: a.sourceName,
+    title: a.title,
+    excerpt: a.excerpt.slice(0, 200),
+  }));
+
+  const res = await client.messages.create({
+    model,
+    max_tokens: 1500,
+    system: [
+      { type: "text", text: CLUSTER_SYSTEM, cache_control: { type: "ephemeral" } },
+    ],
+    messages: [{ role: "user", content: JSON.stringify({ articles: indexed }) }],
+  });
+
+  let parsed: ClusterResult;
+  try {
+    parsed = parseJson<ClusterResult>(textOf(res));
+  } catch {
+    // Fall back to no clustering if the model output is malformed.
+    return {
+      clusters: articles.map((_, i) => [i]),
+      usage: readUsage(res),
+    };
+  }
+
+  const seen = new Set<number>();
+  const clusters: number[][] = [];
+  for (const group of parsed.clusters) {
+    const valid = group.filter(
+      (id) => Number.isInteger(id) && id >= 0 && id < articles.length && !seen.has(id),
+    );
+    if (valid.length === 0) continue;
+    valid.forEach((id) => seen.add(id));
+    clusters.push(valid);
+  }
+  // Defensive: anything the model dropped becomes its own cluster.
+  for (let i = 0; i < articles.length; i++) {
+    if (!seen.has(i)) clusters.push([i]);
+  }
+
+  return { clusters, usage: readUsage(res) };
+}
+
 export async function summarizeArticles(
   scored: ScoredArticle[],
   model: string = SUMMARY_MODEL,
-): Promise<{ articles: SummarizedArticle[]; usage: TokenUsage }> {
-  const empty: TokenUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
-  if (scored.length === 0) return { articles: [], usage: empty };
+): Promise<{ summaries: Map<number, string>; usage: TokenUsage }> {
+  if (scored.length === 0) return { summaries: new Map(), usage: EMPTY_USAGE };
 
   const indexed = scored.map((a, i) => ({
     id: i,
@@ -146,29 +219,16 @@ export async function summarizeArticles(
     excerpt: a.excerpt.slice(0, 400),
   }));
 
-  const userPayload = JSON.stringify({ articles: indexed });
-
   const res = await client.messages.create({
     model,
     max_tokens: 8000,
     system: [
       { type: "text", text: SUMMARY_SYSTEM, cache_control: { type: "ephemeral" } },
     ],
-    messages: [{ role: "user", content: userPayload }],
+    messages: [{ role: "user", content: JSON.stringify({ articles: indexed }) }],
   });
 
-  const text = res.content
-    .filter((b) => b.type === "text")
-    .map((b) => (b as { text: string }).text)
-    .join("");
-
-  const parsed = parseJson<SummaryResult>(text);
-  const byId = new Map(parsed.summaries.map((s) => [s.id, s.summary]));
-
-  const articles = scored.map((a, i) => ({
-    ...a,
-    summary: byId.get(i) ?? "Summary unavailable.",
-  }));
-
-  return { articles, usage: readUsage(res) };
+  const parsed = parseJson<SummaryResult>(textOf(res));
+  const summaries = new Map(parsed.summaries.map((s) => [s.id, s.summary]));
+  return { summaries, usage: readUsage(res) };
 }

@@ -1,18 +1,37 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { Header } from "@/components/Header";
 import { ArticleCard } from "@/components/ArticleCard";
 import { ArticleSkeleton } from "@/components/Skeleton";
+import { SortToggle } from "@/components/SortToggle";
 import { loadInterests } from "@/lib/interests";
 import { loadModels } from "@/lib/models";
-import type { Briefing } from "@/lib/types";
+import { DEFAULT_SORT, loadSort, saveSort, type SortMode } from "@/lib/sort-pref";
+import { loadReadSet, markRead } from "@/lib/read-tracker";
+import type { Briefing, SummarizedArticle } from "@/lib/types";
 
 function formatCost(dollars: number): string {
   if (dollars === 0) return "$0.00";
   if (dollars < 0.01) return `$${dollars.toFixed(4)}`;
   return `$${dollars.toFixed(3)}`;
+}
+
+function sortArticles(articles: SummarizedArticle[], mode: SortMode): SummarizedArticle[] {
+  const copy = [...articles];
+  if (mode === "recency") {
+    copy.sort((a, b) => {
+      const ta = Date.parse(a.publishedAt);
+      const tb = Date.parse(b.publishedAt);
+      const va = Number.isNaN(ta) ? 0 : ta;
+      const vb = Number.isNaN(tb) ? 0 : tb;
+      return vb - va;
+    });
+  } else {
+    copy.sort((a, b) => b.score - a.score);
+  }
+  return copy;
 }
 
 export default function BriefingPage() {
@@ -21,6 +40,13 @@ export default function BriefingPage() {
   const [empty, setEmpty] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [wasCached, setWasCached] = useState(false);
+  const [sort, setSort] = useState<SortMode>(DEFAULT_SORT);
+  const [readSet, setReadSet] = useState<Set<string>>(() => new Set());
+
+  useEffect(() => {
+    setSort(loadSort());
+    setReadSet(loadReadSet());
+  }, []);
 
   const load = useCallback(async (force: boolean) => {
     setError(null);
@@ -56,6 +82,26 @@ export default function BriefingPage() {
   useEffect(() => {
     load(false);
   }, [load]);
+
+  function changeSort(mode: SortMode) {
+    setSort(mode);
+    saveSort(mode);
+  }
+
+  function handleOpen(link: string) {
+    markRead(link);
+    setReadSet((prev) => {
+      if (prev.has(link)) return prev;
+      const next = new Set(prev);
+      next.add(link);
+      return next;
+    });
+  }
+
+  const sortedArticles = useMemo(
+    () => (briefing ? sortArticles(briefing.articles, sort) : []),
+    [briefing, sort],
+  );
 
   let subtitle: string | undefined;
   if (briefing) {
@@ -119,11 +165,21 @@ export default function BriefingPage() {
             .
           </div>
         ) : (
-          <div className="space-y-4">
-            {briefing.articles.map((a, i) => (
-              <ArticleCard key={`${a.link}-${i}`} article={a} />
-            ))}
-          </div>
+          <>
+            <div className="mb-4 flex justify-end">
+              <SortToggle value={sort} onChange={changeSort} />
+            </div>
+            <div className="space-y-4">
+              {sortedArticles.map((a, i) => (
+                <ArticleCard
+                  key={`${a.link}-${i}`}
+                  article={a}
+                  read={readSet.has(a.link)}
+                  onOpen={handleOpen}
+                />
+              ))}
+            </div>
+          </>
         )}
       </div>
     </main>

@@ -36,6 +36,15 @@ export interface ScoredArticle extends RawArticle {
 
 export interface SummarizedArticle extends ScoredArticle {
   summary: string;
+  /** Other articles in the same cluster (same news event from different outlets). */
+  related: RelatedArticle[];
+}
+
+export interface RelatedArticle {
+  source: SourceId;
+  sourceName: string;
+  title: string;
+  link: string;
 }
 
 export interface TokenUsage {
@@ -47,9 +56,11 @@ export interface TokenUsage {
 
 export interface CostBreakdown {
   scoring: number;
+  clustering: number;
   summary: number;
   total: number;
   scoringUsage: TokenUsage;
+  clusteringUsage: TokenUsage;
   summaryUsage: TokenUsage;
   scoringModel: string;
   summaryModel: string;

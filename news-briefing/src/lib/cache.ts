@@ -27,7 +27,7 @@ export async function getCachedBriefing(
   force = false,
   options: BriefingOptions = {},
 ): Promise<Briefing> {
-  const key = `briefing-v3-${todayKey()}-${hashInterests(interests)}-${modelTag(options)}`;
+  const key = `briefing-v4-${todayKey()}-${hashInterests(interests)}-${modelTag(options)}`;
   if (force) revalidateTag(key);
   const fetcher = unstable_cache(
     async () => buildBriefing(interests, options),

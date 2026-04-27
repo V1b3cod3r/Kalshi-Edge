@@ -70,6 +70,10 @@ export interface Briefing {
   generatedAt: string;
   date: string;
   interests: string[];
+  /** Curated by interest match — these are what you asked for. */
   articles: SummarizedArticle[];
+  /** Broadly-covered news of the day that may not match your interests.
+   * Identified by cluster size: stories covered by multiple outlets. */
+  topStories: SummarizedArticle[];
   cost: CostBreakdown;
 }

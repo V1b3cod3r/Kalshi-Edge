@@ -98,14 +98,20 @@ export default function BriefingPage() {
     });
   }
 
-  const sortedArticles = useMemo(
+  const sortedCurated = useMemo(
     () => (briefing ? sortArticles(briefing.articles, sort) : []),
     [briefing, sort],
   );
+  const sortedTopStories = useMemo(
+    () => (briefing ? sortArticles(briefing.topStories ?? [], sort) : []),
+    [briefing, sort],
+  );
+
+  const totalCount = (briefing?.articles.length ?? 0) + (briefing?.topStories?.length ?? 0);
 
   let subtitle: string | undefined;
   if (briefing) {
-    const count = `${briefing.articles.length} stories matched to your interests`;
+    const count = `${totalCount} stor${totalCount === 1 ? "y" : "ies"}`;
     const costLabel = wasCached
       ? "served from cache"
       : `this pull cost ${formatCost(briefing.cost.total)}`;
@@ -115,6 +121,9 @@ export default function BriefingPage() {
   } else if (refreshing) {
     subtitle = "Curating today's stories…";
   }
+
+  const hasAnyArticles =
+    briefing && (sortedCurated.length > 0 || sortedTopStories.length > 0);
 
   return (
     <main className="min-h-screen pb-16">
@@ -156,7 +165,7 @@ export default function BriefingPage() {
             <ArticleSkeleton />
             <ArticleSkeleton />
           </div>
-        ) : briefing.articles.length === 0 ? (
+        ) : !hasAnyArticles ? (
           <div className="rounded-2xl bg-surface shadow-card p-8 text-center text-[15px] text-ink-soft">
             Nothing matched your interests today. Check back later, or
             <Link href="/settings" className="ml-1 text-accent hover:underline">
@@ -169,16 +178,40 @@ export default function BriefingPage() {
             <div className="mb-4 flex justify-end">
               <SortToggle value={sort} onChange={changeSort} />
             </div>
-            <div className="space-y-4">
-              {sortedArticles.map((a, i) => (
-                <ArticleCard
-                  key={`${a.link}-${i}`}
-                  article={a}
-                  read={readSet.has(a.link)}
-                  onOpen={handleOpen}
-                />
-              ))}
-            </div>
+            {sortedCurated.length > 0 && (
+              <div className="space-y-4">
+                {sortedCurated.map((a, i) => (
+                  <ArticleCard
+                    key={`curated-${a.link}-${i}`}
+                    article={a}
+                    read={readSet.has(a.link)}
+                    onOpen={handleOpen}
+                  />
+                ))}
+              </div>
+            )}
+            {sortedTopStories.length > 0 && (
+              <section className="mt-10">
+                <div className="mb-4 px-1">
+                  <h2 className="text-[13px] uppercase tracking-[0.12em] text-ink-faint">
+                    Top stories
+                  </h2>
+                  <p className="mt-1 text-[13px] text-ink-muted">
+                    Widely covered today — may not match your interests.
+                  </p>
+                </div>
+                <div className="space-y-4">
+                  {sortedTopStories.map((a, i) => (
+                    <ArticleCard
+                      key={`top-${a.link}-${i}`}
+                      article={a}
+                      read={readSet.has(a.link)}
+                      onOpen={handleOpen}
+                    />
+                  ))}
+                </div>
+              </section>
+            )}
           </>
         )}
       </div>

@@ -35,10 +35,12 @@ function asText(v: unknown): string {
   return String(v);
 }
 
-export async function fetchFeed(feed: SourceFeed): Promise<RawArticle[]> {
+export async function fetchFeed(feed: SourceFeed, forceFresh = false): Promise<RawArticle[]> {
   const res = await fetch(feed.url, {
     headers: { "User-Agent": UA, Accept: "application/rss+xml, application/xml, text/xml" },
-    next: { revalidate: 1800 },
+    // 5-min cache normally so auto-loads are cheap; force=true bypasses
+    // entirely so the refresh button actually pulls today's latest.
+    ...(forceFresh ? { cache: "no-store" as const } : { next: { revalidate: 300 } }),
   });
   if (!res.ok) return [];
   const xml = await res.text();
@@ -93,8 +95,10 @@ function dedupe(articles: RawArticle[]): RawArticle[] {
   return out;
 }
 
-export async function fetchAllArticles(): Promise<RawArticle[]> {
-  const results = await Promise.allSettled(SOURCES.map(fetchFeed));
+export async function fetchAllArticles(forceFresh = false): Promise<RawArticle[]> {
+  const results = await Promise.allSettled(
+    SOURCES.map((feed) => fetchFeed(feed, forceFresh)),
+  );
   const all = results.flatMap((r) => (r.status === "fulfilled" ? r.value : []));
   return dedupe(all);
 }

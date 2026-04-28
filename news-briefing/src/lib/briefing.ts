@@ -24,9 +24,25 @@ const CURATED_N = 12;
 const TOP_STORIES_N = 5;
 const TOP_STORIES_MIN_CLUSTER_SIZE = 2;
 
+/**
+ * Adjustment to the LLM relevance score based on how recent the article is.
+ * Lets a 2h-old article with score 6 outrank a 14h-old article with score 8,
+ * which matches the user's mental model of "today's news".
+ */
+function recencyAdjustment(publishedAt: string): number {
+  const t = Date.parse(publishedAt);
+  if (!Number.isFinite(t)) return -1;
+  const hours = (Date.now() - t) / 3_600_000;
+  if (hours < 3) return 2;
+  if (hours < 9) return 1;
+  if (hours < 15) return 0;
+  return -1;
+}
+
 export interface BriefingOptions {
   scoringModel?: string;
   summaryModel?: string;
+  forceFresh?: boolean;
 }
 
 interface ClusterCard {
@@ -67,7 +83,7 @@ export async function buildBriefing(
   const scoringModel = options.scoringModel || SCORING_MODEL;
   const summaryModel = options.summaryModel || SUMMARY_MODEL;
 
-  const all = await fetchAllArticles();
+  const all = await fetchAllArticles(options.forceFresh);
   const candidates = prefilter(all, interests, PREFILTER_POOL);
   const { articles: scored, usage: scoringUsage } = await scoreRelevance(
     candidates,
@@ -75,10 +91,18 @@ export async function buildBriefing(
     scoringModel,
   );
 
-  // Pick the candidate pool for clustering. Sort by interest score so the
-  // "curated" list comes from the most relevant articles, but keep the pool
-  // wide enough to surface broadly-covered news for Top Stories.
-  const pool = [...scored]
+  // Apply the recency adjustment so newer articles bubble up among
+  // similarly-relevant peers. Keep the original LLM score on the article
+  // so the UI/sorts can still see the relevance signal directly if needed.
+  const adjusted = scored.map((a) => ({
+    ...a,
+    score: a.score + recencyAdjustment(a.publishedAt),
+  }));
+
+  // Pick the candidate pool for clustering. Sort by adjusted score so the
+  // "curated" list comes from the most relevant + recent articles, but keep
+  // the pool wide enough to surface broadly-covered news for Top Stories.
+  const pool = [...adjusted]
     .sort((a, b) => b.score - a.score)
     .slice(0, CLUSTER_POOL);
 

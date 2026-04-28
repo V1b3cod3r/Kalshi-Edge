@@ -1,6 +1,6 @@
 import type { SourceFeed } from "./types";
 
-const DAILY = 36;
+const DAILY = 18;
 const WEEKLY = 24 * 7;
 
 export const SOURCES: SourceFeed[] = [

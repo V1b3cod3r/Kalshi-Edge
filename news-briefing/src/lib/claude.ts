@@ -154,7 +154,7 @@ export async function scoreRelevance(
  * missing ids as singletons).
  */
 export async function clusterArticles(
-  articles: ScoredArticle[],
+  articles: RawArticle[],
   model: string = SCORING_MODEL,
 ): Promise<{ clusters: number[][]; usage: TokenUsage }> {
   if (articles.length <= 1) {
@@ -215,9 +215,24 @@ export async function clusterArticles(
   return { clusters, usage: readUsage(res) };
 }
 
-export async function summarizeArticles(
+function addUsage(a: TokenUsage, b: TokenUsage): TokenUsage {
+  return {
+    input: a.input + b.input,
+    output: a.output + b.output,
+    cacheRead: a.cacheRead + b.cacheRead,
+    cacheWrite: a.cacheWrite + b.cacheWrite,
+  };
+}
+
+/**
+ * Summarize a single chunk of articles. Returns summaries keyed by the
+ * provided `globalOffset + chunk-local index`, so callers can merge
+ * multiple chunks back into a single index space.
+ */
+async function summarizeChunk(
   scored: ScoredArticle[],
-  model: string = SUMMARY_MODEL,
+  model: string,
+  globalOffset: number,
 ): Promise<{ summaries: Map<number, string>; usage: TokenUsage }> {
   if (scored.length === 0) return { summaries: new Map(), usage: EMPTY_USAGE };
 
@@ -230,14 +245,59 @@ export async function summarizeArticles(
 
   const res = await client.messages.create({
     model,
-    max_tokens: 8000,
+    max_tokens: 4000,
     system: [
       { type: "text", text: SUMMARY_SYSTEM, cache_control: { type: "ephemeral" } },
     ],
     messages: [{ role: "user", content: JSON.stringify({ articles: indexed }) }],
   });
 
-  const parsed = parseJson<SummaryResult>(textOf(res));
-  const summaries = new Map(parsed.summaries.map((s) => [s.id, s.summary]));
+  let parsed: SummaryResult;
+  try {
+    parsed = parseJson<SummaryResult>(textOf(res));
+  } catch {
+    return { summaries: new Map(), usage: readUsage(res) };
+  }
+  const summaries = new Map<number, string>();
+  for (const s of parsed.summaries) {
+    if (Number.isInteger(s.id) && s.id >= 0 && s.id < scored.length) {
+      summaries.set(globalOffset + s.id, s.summary);
+    }
+  }
   return { summaries, usage: readUsage(res) };
+}
+
+/**
+ * Summarize articles in parallel chunks. Vercel hobby tier caps function
+ * runtime at 60s; one Sonnet call summarizing 15+ articles can spend most
+ * of that budget alone. Splitting into ~6-article chunks and running them
+ * concurrently keeps total wall time around the latency of a single chunk.
+ */
+const SUMMARY_CHUNK_SIZE = 6;
+
+export async function summarizeArticles(
+  scored: ScoredArticle[],
+  model: string = SUMMARY_MODEL,
+): Promise<{ summaries: Map<number, string>; usage: TokenUsage }> {
+  if (scored.length === 0) return { summaries: new Map(), usage: EMPTY_USAGE };
+
+  const chunks: { slice: ScoredArticle[]; offset: number }[] = [];
+  for (let i = 0; i < scored.length; i += SUMMARY_CHUNK_SIZE) {
+    chunks.push({
+      slice: scored.slice(i, i + SUMMARY_CHUNK_SIZE),
+      offset: i,
+    });
+  }
+
+  const results = await Promise.all(
+    chunks.map(({ slice, offset }) => summarizeChunk(slice, model, offset)),
+  );
+
+  const merged = new Map<number, string>();
+  let total: TokenUsage = EMPTY_USAGE;
+  for (const r of results) {
+    for (const [k, v] of r.summaries) merged.set(k, v);
+    total = addUsage(total, r.usage);
+  }
+  return { summaries: merged, usage: total };
 }

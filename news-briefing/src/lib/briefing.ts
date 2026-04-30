@@ -87,16 +87,18 @@ export async function buildBriefing(
   const candidates = prefilter(all, interests, PREFILTER_POOL);
 
   // Scoring and clustering operate on the same prefilter pool and don't
-  // depend on each other (scoring measures interest match, clustering
-  // groups by topic similarity). Run them in parallel to roughly halve
-  // pre-summary wall time on slower models.
+  // depend on each other. Run in parallel. Clustering is always Haiku
+  // since it's an internal classification task — the user's model choice
+  // should only affect user-visible prose, not silent topic grouping.
+  // This also keeps the parallel branch fast even when the user picks
+  // Sonnet/Opus for scoring.
   const rawCandidates = candidates.map((c) => c.article).slice(0, CLUSTER_POOL);
   const [
     { articles: scored, usage: scoringUsage },
     { clusters, usage: clusteringUsage },
   ] = await Promise.all([
     scoreRelevance(candidates, interests, scoringModel),
-    clusterArticles(rawCandidates, scoringModel),
+    clusterArticles(rawCandidates, SCORING_MODEL),
   ]);
 
   // Apply the recency adjustment so newer articles bubble up among
@@ -141,7 +143,9 @@ export async function buildBriefing(
   );
 
   const scoringCost = costFor(scoringModel, scoringUsage);
-  const clusteringCost = costFor(scoringModel, clusteringUsage);
+  // Clustering always runs on Haiku (see Promise.all above), so price it
+  // at Haiku rates regardless of the user's scoring choice.
+  const clusteringCost = costFor(SCORING_MODEL, clusteringUsage);
   const summaryCost = costFor(summaryModel, summaryUsage);
 
   return {

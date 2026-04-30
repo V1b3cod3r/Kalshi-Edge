@@ -270,10 +270,11 @@ async function summarizeChunk(
 /**
  * Summarize articles in parallel chunks. Vercel hobby tier caps function
  * runtime at 60s; one Sonnet call summarizing 15+ articles can spend most
- * of that budget alone. Splitting into ~6-article chunks and running them
- * concurrently keeps total wall time around the latency of a single chunk.
+ * of that budget alone. Smaller chunks = less output per call = faster wall
+ * time on slower models (Sonnet/Opus generate ~50 tok/s, so 4 articles of
+ * output is meaningfully faster than 6).
  */
-const SUMMARY_CHUNK_SIZE = 6;
+const SUMMARY_CHUNK_SIZE = 4;
 
 export async function summarizeArticles(
   scored: ScoredArticle[],

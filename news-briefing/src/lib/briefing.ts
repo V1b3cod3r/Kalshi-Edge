@@ -85,31 +85,29 @@ export async function buildBriefing(
 
   const all = await fetchAllArticles(options.forceFresh);
   const candidates = prefilter(all, interests, PREFILTER_POOL);
-  const { articles: scored, usage: scoringUsage } = await scoreRelevance(
-    candidates,
-    interests,
-    scoringModel,
-  );
+
+  // Scoring and clustering operate on the same prefilter pool and don't
+  // depend on each other (scoring measures interest match, clustering
+  // groups by topic similarity). Run them in parallel to roughly halve
+  // pre-summary wall time on slower models.
+  const rawCandidates = candidates.map((c) => c.article).slice(0, CLUSTER_POOL);
+  const [
+    { articles: scored, usage: scoringUsage },
+    { clusters, usage: clusteringUsage },
+  ] = await Promise.all([
+    scoreRelevance(candidates, interests, scoringModel),
+    clusterArticles(rawCandidates, scoringModel),
+  ]);
 
   // Apply the recency adjustment so newer articles bubble up among
-  // similarly-relevant peers. Keep the original LLM score on the article
-  // so the UI/sorts can still see the relevance signal directly if needed.
-  const adjusted = scored.map((a) => ({
-    ...a,
-    score: a.score + recencyAdjustment(a.publishedAt),
-  }));
-
-  // Pick the candidate pool for clustering. Sort by adjusted score so the
-  // "curated" list comes from the most relevant + recent articles, but keep
-  // the pool wide enough to surface broadly-covered news for Top Stories.
-  const pool = [...adjusted]
-    .sort((a, b) => b.score - a.score)
-    .slice(0, CLUSTER_POOL);
-
-  const { clusters, usage: clusteringUsage } = await clusterArticles(
-    pool,
-    scoringModel,
-  );
+  // similarly-relevant peers. Cluster indices map into this same array
+  // (same order as `candidates` -> `rawCandidates`).
+  const pool: ScoredArticle[] = scored
+    .slice(0, CLUSTER_POOL)
+    .map((a) => ({
+      ...a,
+      score: a.score + recencyAdjustment(a.publishedAt),
+    }));
 
   const allCards = clusters
     .map((indices) => buildCard(indices, pool))

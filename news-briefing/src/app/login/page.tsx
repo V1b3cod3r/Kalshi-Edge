@@ -4,10 +4,18 @@ import { Suspense, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import type { Route } from "next";
 
+function safeFrom(raw: string | null): string {
+  // Only accept same-origin paths to prevent open-redirect via ?from=//evil
+  if (!raw) return "/";
+  if (!raw.startsWith("/")) return "/";
+  if (raw.startsWith("//") || raw.startsWith("/\\")) return "/";
+  return raw;
+}
+
 function LoginForm() {
   const router = useRouter();
   const params = useSearchParams();
-  const from = params.get("from") || "/";
+  const from = safeFrom(params.get("from"));
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);

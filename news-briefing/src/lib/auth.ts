@@ -34,8 +34,13 @@ export function verifyToken(token: string | undefined): boolean {
 export function checkPassword(submitted: string): boolean {
   const expected = process.env.APP_PASSWORD;
   if (!expected) return false;
-  if (submitted.length !== expected.length) return false;
-  return timingSafeEqual(Buffer.from(submitted), Buffer.from(expected));
+  // Compare BYTE lengths, not string lengths — UTF-8 multi-byte chars can
+  // make Buffer.from(submitted) and Buffer.from(expected) different lengths
+  // even when .length matches, and timingSafeEqual throws on length mismatch.
+  const a = Buffer.from(submitted);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
 }
 
 export async function setAuthCookie(): Promise<void> {

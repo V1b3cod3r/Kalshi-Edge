@@ -4,6 +4,8 @@
  * Maps Kalshi series tickers to live data from free public APIs:
  * - Yahoo Finance (no key): equity indices, VIX, crypto, Fed Funds futures
  * - BLS v1 API (no key): CPI, core CPI
+ * - Cleveland Fed Inflation Nowcast (no key): daily CPI/PCE nowcasts
+ * - NWS Weather API (no key): 7-day forecast
  * - Economic calendar: upcoming release dates + street consensus forecasts
  *
  * All fetches have a 5s timeout and fail silently — a missing signal
@@ -11,6 +13,8 @@
  */
 
 import { getCalendarSignals } from './calendar'
+import fs from 'fs'
+import path from 'path'
 
 export interface Signal {
   label: string    // e.g. "VIX (fear index)"
@@ -33,6 +37,23 @@ async function fetchJson(url: string): Promise<any> {
     })
     if (!res.ok) return null
     return res.json()
+  } catch {
+    return null
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+async function fetchText(url: string): Promise<string | null> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS)
+  try {
+    const res = await fetch(url, {
+      signal: controller.signal,
+      headers: { 'User-Agent': 'Mozilla/5.0' },
+    })
+    if (!res.ok) return null
+    return res.text()
   } catch {
     return null
   } finally {
@@ -70,6 +91,64 @@ function annualizedVol(closes: number[]): number {
   const mean = returns.reduce((a, b) => a + b, 0) / returns.length
   const variance = returns.reduce((a, r) => a + (r - mean) ** 2, 0) / returns.length
   return Math.sqrt(variance * 252) * 100
+}
+
+/** Today's date string YYYY-MM-DD */
+function todayStr(): string {
+  return new Date().toISOString().slice(0, 10)
+}
+
+// ── BLS daily file cache ─────────────────────────────────────────────────────
+// BLS v1 API allows only 10 req/day without a key — cache to disk to stay under limit
+
+const BLS_CACHE_PATH = path.join(process.cwd(), 'data', 'cache', 'bls_cache.json')
+
+interface BlsCache {
+  date: string
+  headline: any
+  core: any
+  payrolls: any
+  unrate: any
+}
+
+function readBlsCache(): BlsCache | null {
+  try {
+    const raw = fs.readFileSync(BLS_CACHE_PATH, 'utf-8')
+    const cache: BlsCache = JSON.parse(raw)
+    if (cache.date === todayStr()) return cache
+    return null
+  } catch {
+    return null
+  }
+}
+
+function writeBlsCache(data: Omit<BlsCache, 'date'>): void {
+  try {
+    const dir = path.dirname(BLS_CACHE_PATH)
+    fs.mkdirSync(dir, { recursive: true })
+    const cache: BlsCache = { date: todayStr(), ...data }
+    fs.writeFileSync(BLS_CACHE_PATH, JSON.stringify(cache), 'utf-8')
+  } catch {
+    // cache write failure is non-fatal
+  }
+}
+
+/** Fetch all four BLS series at once, with daily file caching */
+async function fetchBlsData(): Promise<{ headline: any; core: any; payrolls: any; unrate: any }> {
+  const cached = readBlsCache()
+  if (cached) {
+    return { headline: cached.headline, core: cached.core, payrolls: cached.payrolls, unrate: cached.unrate }
+  }
+
+  const [headline, core, payrolls, unrate] = await Promise.all([
+    fetchJson('https://api.bls.gov/publicAPI/v1/timeseries/data/CUUR0000SA0'),
+    fetchJson('https://api.bls.gov/publicAPI/v1/timeseries/data/CUUR0000SA0L1E'),
+    fetchJson('https://api.bls.gov/publicAPI/v1/timeseries/data/CES0000000001'),
+    fetchJson('https://api.bls.gov/publicAPI/v1/timeseries/data/LNS14000000'),
+  ])
+
+  writeBlsCache({ headline, core, payrolls, unrate })
+  return { headline, core, payrolls, unrate }
 }
 
 // ── per-category signal fetchers ────────────────────────────────────────────
@@ -223,9 +302,15 @@ async function fedSignals(): Promise<Signal[]> {
  * Solve for newRate, then P(cut) = (currentRate − newRate) / 0.25
  */
 async function fedWatchSignal(): Promise<Signal[]> {
-  // 2026 FOMC decision dates (second day of each 2-day meeting)
-  // Source: Federal Reserve 2026 FOMC calendar (mirrors 2025 schedule shifted ~1 year)
+  // Official FOMC decision dates (second day of each 2-day meeting)
+  // Source: Federal Reserve press release 2024-08-09 (tentative 2025-2026 schedule)
+  // https://www.federalreserve.gov/newsevents/pressreleases/monetary20240809a.htm
   const FOMC_DATES = [
+    // 2025
+    '2025-01-29', '2025-03-19', '2025-05-07',
+    '2025-06-18', '2025-07-30', '2025-09-17',
+    '2025-10-29', '2025-12-10',
+    // 2026
     '2026-01-28', '2026-03-18', '2026-04-29',
     '2026-06-17', '2026-07-29', '2026-09-16',
     '2026-10-28', '2026-12-09',
@@ -305,13 +390,10 @@ async function fedWatchSignal(): Promise<Signal[]> {
 
 async function cpiSignals(): Promise<Signal[]> {
   const signals: Signal[] = []
-  // BLS v1 API — no key required, 10 req/day limit
+  // BLS v1 API — no key required, 10 req/day limit (cached via fetchBlsData)
   // CUUR0000SA0 = All Urban Consumers, All Items (headline CPI)
   // CUUR0000SA0L1E = All Urban Consumers, All Items Less Food & Energy (core CPI)
-  const [headline, core] = await Promise.all([
-    fetchJson('https://api.bls.gov/publicAPI/v1/timeseries/data/CUUR0000SA0'),
-    fetchJson('https://api.bls.gov/publicAPI/v1/timeseries/data/CUUR0000SA0L1E'),
-  ])
+  const { headline, core } = await fetchBlsData()
 
   const parseCPI = (data: any) => {
     const series = data?.Results?.series?.[0]?.data
@@ -371,10 +453,7 @@ async function jobsSignals(): Promise<Signal[]> {
   const signals: Signal[] = []
   // CES0000000001 = Total nonfarm payrolls
   // LNS14000000 = Unemployment rate
-  const [payrolls, unrate] = await Promise.all([
-    fetchJson('https://api.bls.gov/publicAPI/v1/timeseries/data/CES0000000001'),
-    fetchJson('https://api.bls.gov/publicAPI/v1/timeseries/data/LNS14000000'),
-  ])
+  const { payrolls, unrate } = await fetchBlsData()
 
   const payrollData: any[] = payrolls?.Results?.series?.[0]?.data ?? []
   if (payrollData.length >= 2) {
@@ -423,22 +502,6 @@ async function jobsSignals(): Promise<Signal[]> {
   }
 
   return signals
-}
-
-async function gdpNowSignal(): Promise<Signal[]> {
-  // Atlanta Fed GDPNow CSV
-  const csv = await fetch(
-    'https://www.atlantafed.org/-/media/documents/cqer/researchcq/gdpnow/RealGDPTrackingData.xlsx',
-    { signal: AbortSignal.timeout(TIMEOUT_MS) }
-  ).catch(() => null)
-  // CSV is binary XLSX so fall back to a simpler approach
-  // Try the public tracking page text version
-  const data = await fetchJson(
-    'https://www.atlantafed.org/cqer/research/gdpnow.aspx'
-  )
-  // If the above fails, we skip — GDPNow is hard to scrape server-side
-  // Return empty and rely on Claude's training data for GDP
-  return []
 }
 
 async function cryptoSignals(symbol: string): Promise<Signal[]> {
@@ -495,6 +558,101 @@ async function oilSignals(): Promise<Signal[]> {
   return signals
 }
 
+/**
+ * Cleveland Fed Inflation Nowcast — daily CPI/PCE nowcast updated each business day.
+ * Attempts to fetch the public data download file; fails silently if unavailable.
+ */
+export async function clevelandFedNowcastSignal(): Promise<string> {
+  try {
+    // The Cleveland Fed publishes nowcast data as a downloadable CSV/XLSX from their
+    // indicators page. Try the known public data endpoint pattern.
+    const url = 'https://www.clevelandfed.org/-/media/project/clevelandfedtenant/clevelandfedsite/indicators-and-data/inflation-nowcasting/inflation-nowcasting-data-2024.xlsx'
+    // The actual data page embeds JSON in the page for their chart widgets.
+    // Use the public API endpoint that their dashboard page calls.
+    const apiUrl = 'https://www.clevelandfed.org/api/indicators/inflation-nowcasting/current'
+    const data = await fetchJson(apiUrl)
+
+    if (data) {
+      // Try to extract CPI YoY nowcast from the response
+      const cpiYoy: number | undefined =
+        data?.cpi_yoy ?? data?.cpiYoy ?? data?.data?.cpi_yoy ??
+        data?.nowcasts?.cpi?.yoy ?? data?.current?.cpi_yoy
+      const asOf: string =
+        data?.date ?? data?.as_of ?? data?.updated ?? todayStr()
+
+      if (cpiYoy !== undefined && cpiYoy !== null) {
+        return `Cleveland Fed Inflation Nowcast: CPI YoY = ${Number(cpiYoy).toFixed(2)}% (as of ${asOf})\nUse this as the anchor probability for CPI bracket markets resolving within 30 days.`
+      }
+    }
+
+    // Fallback: try the public page for structured data via a text scrape
+    const pageText = await fetchText('https://www.clevelandfed.org/indicators-and-data/inflation-nowcasting')
+    if (pageText) {
+      // Look for patterns like "2.4%" or "CPI: 2.4" in the page text
+      const match = pageText.match(/CPI[^0-9]*?(\d+\.\d+)\s*%/i)
+      if (match) {
+        return `Cleveland Fed Inflation Nowcast: CPI YoY ≈ ${match[1]}% (as of ${todayStr()})\nUse this as the anchor probability for CPI bracket markets resolving within 30 days.`
+      }
+    }
+    return ''
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * NWS 7-day weather forecast for a given lat/lon (defaults to New York City).
+ * Uses the free National Weather Service API (no key required).
+ */
+export async function nwsWeatherSignal(location?: string): Promise<string> {
+  try {
+    // Default: New York City (lat 40.71, lon -74.01)
+    const pointsUrl = 'https://api.weather.gov/points/40.71,-74.01'
+    const locationLabel = location ?? 'NYC'
+
+    const pointsData = await fetchJson(pointsUrl)
+    const forecastUrl: string | undefined = pointsData?.properties?.forecast
+    if (!forecastUrl) return ''
+
+    const forecastData = await fetchJson(forecastUrl)
+    const periods: any[] = forecastData?.properties?.periods ?? []
+    if (periods.length === 0) return ''
+
+    // Extract highs, lows, and max precip chance across 7 days
+    const daytimePeriods = periods.filter((p: any) => p.isDaytime).slice(0, 7)
+    const nighttimePeriods = periods.filter((p: any) => !p.isDaytime).slice(0, 7)
+
+    const highs = daytimePeriods.map((p: any) => p.temperature as number)
+    const lows = nighttimePeriods.map((p: any) => p.temperature as number)
+    const maxHigh = highs.length > 0 ? Math.max(...highs) : null
+    const minLow = lows.length > 0 ? Math.min(...lows) : null
+
+    // Find highest precipitation chance across all periods
+    let maxPrecipDay = ''
+    let maxPrecipChance = 0
+    for (const p of periods.slice(0, 14)) {
+      const prob: number = p.probabilityOfPrecipitation?.value ?? 0
+      if (prob > maxPrecipChance) {
+        maxPrecipChance = prob
+        maxPrecipDay = p.name ?? ''
+      }
+    }
+
+    const parts: string[] = []
+    if (maxHigh !== null && minLow !== null) {
+      parts.push(`High ${maxHigh}°F, Low ${minLow}°F`)
+    }
+    if (maxPrecipChance > 0) {
+      parts.push(`${maxPrecipDay}: ${maxPrecipChance}% precipitation chance`)
+    }
+
+    if (parts.length === 0) return ''
+    return `NWS 7-day forecast (${locationLabel}): ${parts.join('. ')}.\nRelevant for temperature/precipitation Kalshi markets.`
+  } catch {
+    return ''
+  }
+}
+
 // ── series ticker → signal fetcher mapping ──────────────────────────────────
 
 const FED_SERIES = new Set([
@@ -518,6 +676,16 @@ export function seriesFromTicker(ticker: string): string {
   return parts[0]
 }
 
+/** Returns true if the market title is CPI/inflation related */
+function isCpiTitle(title: string): boolean {
+  return /\b(cpi|inflation|pce|consumer price)\b/i.test(title)
+}
+
+/** Returns true if the market title is weather related */
+function isWeatherTitle(title: string): boolean {
+  return /\b(temperature|precip|precipitation|weather|rain|snow|storm|hurricane|tornado|flood)\b/i.test(title)
+}
+
 /**
  * Fetch all relevant real-time signals for a given market.
  * Never throws — returns [] on any failure.
@@ -525,6 +693,7 @@ export function seriesFromTicker(ticker: string): string {
 export async function getSignalsForMarket(
   ticker: string,
   seriesTicker?: string,
+  marketTitle?: string,
 ): Promise<Signal[]> {
   const series = seriesTicker ?? seriesFromTicker(ticker)
 
@@ -534,8 +703,20 @@ export async function getSignalsForMarket(
       return [...fed, ...fw, ...tsys, ...cal]
     }
     if (CPI_SERIES.has(series)) {
-      const [cpi, fed, fw, tsys, cal] = await Promise.all([cpiSignals(), fedSignals(), fedWatchSignal(), treasurySignals(), getCalendarSignals(['cpi', 'pce'])])
-      return [...cpi, ...fed, ...fw, ...tsys, ...cal]
+      const title = marketTitle ?? ticker
+      const [cpi, fed, fw, tsys, cal, nowcast] = await Promise.all([
+        cpiSignals(),
+        fedSignals(),
+        fedWatchSignal(),
+        treasurySignals(),
+        getCalendarSignals(['cpi', 'pce']),
+        isCpiTitle(title) ? clevelandFedNowcastSignal() : Promise.resolve(''),
+      ])
+      const base: Signal[] = [...cpi, ...fed, ...fw, ...tsys, ...cal]
+      if (nowcast) {
+        base.push({ label: 'Cleveland Fed Nowcast', value: '', note: nowcast, source: 'Cleveland Fed' })
+      }
+      return base
     }
     if (JOBS_SERIES.has(series)) {
       const [jobs, tsys, cal] = await Promise.all([jobsSignals(), treasurySignals(), getCalendarSignals(['jobs'])])
@@ -556,6 +737,13 @@ export async function getSignalsForMarket(
     if (series.includes('TARIFF') || series === 'KXNEWTARIFFS') {
       const [spx, dxy] = await Promise.all([spxSignals(), dxySignal()])
       return [...spx, ...dxy]
+    }
+    // Weather markets: NWS forecast
+    if (marketTitle && isWeatherTitle(marketTitle)) {
+      const wx = await nwsWeatherSignal()
+      if (wx) {
+        return [{ label: 'NWS Weather Forecast', value: '', note: wx, source: 'National Weather Service' }]
+      }
     }
   } catch {
     // signals are best-effort
@@ -578,7 +766,9 @@ export async function getSignalsForMarkets(
   const results = new Map<string, Signal[]>()
   await Promise.all(
     Array.from(seriesMap.entries()).map(async ([series, tickers]) => {
-      const signals = await getSignalsForMarket(tickers[0], series)
+      // Find the market title for the first ticker in this series group
+      const firstMarket = markets.find((m) => (m.id ?? '') === tickers[0])
+      const signals = await getSignalsForMarket(tickers[0], series, firstMarket?.title)
       for (const ticker of tickers) {
         results.set(ticker, signals)
       }

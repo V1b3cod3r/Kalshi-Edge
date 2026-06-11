@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getViews, getSession, getSettings } from '@/lib/storage'
+import { getViews, getSession, getSettings, getCalibrationStats } from '@/lib/storage'
 import { buildScannerSystemPrompt, buildScannerUserMessage } from '@/lib/prompts'
 import { callClaude } from '@/lib/claude'
 import { MarketInput } from '@/lib/types'
@@ -24,9 +24,10 @@ export async function POST(req: NextRequest) {
 
     const views = getViews()
     const session = getSession()
+    const calibration = getCalibrationStats()
 
-    const systemPrompt = buildScannerSystemPrompt()
-    const userMessage = buildScannerUserMessage(markets, views, session)
+    const systemPrompt = buildScannerSystemPrompt(calibration)
+    const userMessage = buildScannerUserMessage(markets, views, session, new Map(), new Map(), calibration)
 
     const result = await callClaude(settings.anthropic_api_key, systemPrompt, userMessage)
 

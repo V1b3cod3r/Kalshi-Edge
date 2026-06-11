@@ -85,7 +85,7 @@ export async function POST(req: NextRequest) {
     ])
 
     const systemPrompt = buildAnalysisSystemPrompt(calibration, relevantLessons)
-    const userMessage = buildAnalysisUserMessage(market, views, session, signals, webContext)
+    const userMessage = buildAnalysisUserMessage(market, views, session, signals, webContext, calibration)
 
     const result = await callClaude(
       settings.anthropic_api_key,

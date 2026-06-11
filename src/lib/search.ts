@@ -16,18 +16,12 @@ export interface NewsItem {
   source: string
 }
 
-export interface PolymarketRef {
-  question: string
-  yesPrice: number   // cents (1–99)
-  noPrice: number
-  volume: string     // e.g. "$240k"
-}
-
 export interface WebContext {
   query: string
   news: NewsItem[]
   tavilyAnswer?: string
-  polymarket?: PolymarketRef[]
+  /** Human-readable Polymarket signal string, e.g. "Polymarket consensus: YES = 67% (volume: $45,231) — treat as strong prior" */
+  polymarketSignal?: string
 }
 
 const TIMEOUT_MS = 8000
@@ -138,49 +132,77 @@ export async function searchTavily(
 
 // ── Polymarket cross-reference ───────────────────────────────────────────────
 
-export async function searchPolymarket(query: string, maxResults = 2): Promise<PolymarketRef[]> {
-  const url = `https://gamma-api.polymarket.com/markets?search=${encodeURIComponent(query)}&limit=10&active=true&closed=false`
-  const res = await fetchWithTimeout(url, { headers: { 'User-Agent': 'Mozilla/5.0' } })
-  if (!res) return []
+/**
+ * Search Polymarket for a market matching the given title and return a human-readable
+ * signal string, e.g. "Polymarket consensus: YES = 67% (volume: $45,231) — treat as strong prior".
+ * Returns empty string if no valid match is found. Never throws.
+ */
+export async function searchPolymarket(marketTitle: string): Promise<string> {
+  try {
+    const url = `https://gamma-api.polymarket.com/markets?search=${encodeURIComponent(marketTitle)}&limit=5`
+    const res = await fetchWithTimeout(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' },
+    })
+    if (!res) return ''
 
-  const data = await res.json().catch(() => null)
-  if (!data) return []
+    const data = await res.json().catch(() => null)
+    if (!data) return ''
 
-  const markets: any[] = Array.isArray(data) ? data : (data.data ?? data.markets ?? [])
+    const markets: any[] = Array.isArray(data) ? data : (data.data ?? data.markets ?? [])
 
-  // Build a set of significant query words (>3 chars, no stop words) for relevance filtering
-  const stopWords = new Set(['will', 'the', 'and', 'for', 'that', 'this', 'with', 'from', 'before', 'after', 'what', 'when', 'than', 'more', 'have', 'been'])
-  const queryWords = query.toLowerCase().split(/\W+/).filter(w => w.length > 3 && !stopWords.has(w))
+    // Stop words to ignore when computing title overlap
+    const stopWords = new Set([
+      'a', 'the', 'and', 'for', 'that', 'this', 'with', 'from',
+      'before', 'after', 'what', 'when', 'than', 'more', 'have', 'been',
+      'will', 'by', 'in', 'of', 'to', 'be', 'is',
+    ])
 
-  const refs: PolymarketRef[] = []
+    const titleWords = new Set(
+      marketTitle.toLowerCase().split(/\W+/).filter(w => w.length > 2 && !stopWords.has(w))
+    )
 
-  for (const m of markets) {
-    if (!m.question || !m.outcomePrices) continue
+    for (const m of markets) {
+      // Runtime validation: must be active and not closed
+      if (!m.active || m.closed) continue
+      if (!m.question || !m.outcomePrices) continue
 
-    // Relevance check: question must share at least one significant word with query
-    const qLower = m.question.toLowerCase()
-    const isRelevant = queryWords.some(w => qLower.includes(w))
-    if (!isRelevant) continue
+      // Title overlap check: at least 3 significant words in common
+      const questionWords = m.question.toLowerCase().split(/\W+/).filter(
+        (w: string) => w.length > 2 && !stopWords.has(w)
+      )
+      const overlap = questionWords.filter((w: string) => titleWords.has(w)).length
+      if (overlap < 3) continue
 
-    let prices: string[]
-    try {
-      prices = Array.isArray(m.outcomePrices) ? m.outcomePrices : JSON.parse(m.outcomePrices)
-    } catch {
-      continue
+      // Parse outcomePrices — JSON string array where [0]=YES, [1]=NO
+      let prices: string[]
+      try {
+        prices = Array.isArray(m.outcomePrices) ? m.outcomePrices : JSON.parse(m.outcomePrices)
+      } catch {
+        continue
+      }
+      if (prices.length < 2) continue
+
+      const yesProb = parseFloat(prices[0])
+      if (isNaN(yesProb) || yesProb < 0.03 || yesProb > 0.97) continue
+
+      const yesPct = Math.round(yesProb * 100)
+      const volNum = Number(m.volume ?? 0)
+      const volStr = volNum >= 1_000_000
+        ? `$${(volNum / 1_000_000).toFixed(1)}M`
+        : volNum >= 1000
+          ? `$${Math.round(volNum / 1000).toLocaleString()}k`
+          : volNum > 0
+            ? `$${Math.round(volNum).toLocaleString()}`
+            : ''
+
+      const volPart = volStr ? ` (volume: ${volStr})` : ''
+      return `Polymarket consensus: YES = ${yesPct}%${volPart} — treat as strong prior`
     }
-    if (prices.length < 2) continue
-    const yes = Math.round(parseFloat(prices[0]) * 100)
-    const no = Math.round(parseFloat(prices[1]) * 100)
-    if (yes <= 0 || yes >= 100) continue
 
-    const volNum = Number(m.volume ?? 0)
-    const volume = volNum >= 1000 ? `$${(volNum / 1000).toFixed(0)}k` : volNum > 0 ? `$${volNum.toFixed(0)}` : ''
-
-    refs.push({ question: m.question, yesPrice: yes, noPrice: no, volume })
-    if (refs.length >= maxResults) break
+    return ''
+  } catch {
+    return ''
   }
-
-  return refs
 }
 
 // ── Combined context fetcher ─────────────────────────────────────────────────
@@ -196,10 +218,10 @@ export async function getMarketWebContext(
   // Trim query to ~100 chars — news APIs work best with concise queries
   const query = marketTitle.replace(/^Will /, '').replace(/\?$/, '').trim().slice(0, 120)
 
-  const [googleNews, tavilyResult, polymarket] = await Promise.all([
+  const [googleNews, tavilyResult, polymarketSignal] = await Promise.all([
     searchGoogleNews(query, 6),
     tavilyApiKey ? searchTavily(query, tavilyApiKey, 5) : Promise.resolve({ query, news: [] as NewsItem[] }),
-    searchPolymarket(query, 2),
+    searchPolymarket(marketTitle),
   ])
 
   // Merge: Tavily first (higher quality), then Google News to fill remaining slots
@@ -218,7 +240,7 @@ export async function getMarketWebContext(
     query,
     news: merged,
     tavilyAnswer: (tavilyResult as WebContext).tavilyAnswer,
-    polymarket: polymarket.length > 0 ? polymarket : undefined,
+    polymarketSignal: polymarketSignal || undefined,
   }
 }
 
@@ -259,7 +281,7 @@ export async function getWebContextForMarkets(
 // ── Prompt formatter ─────────────────────────────────────────────────────────
 
 export function formatWebContext(ctx: WebContext): string {
-  if (ctx.news.length === 0 && !ctx.tavilyAnswer && !ctx.polymarket?.length) return ''
+  if (ctx.news.length === 0 && !ctx.tavilyAnswer && !ctx.polymarketSignal) return ''
 
   const lines: string[] = [`Web context (query: "${ctx.query}"):`]
 
@@ -267,12 +289,8 @@ export function formatWebContext(ctx: WebContext): string {
     lines.push(`  AI summary: ${ctx.tavilyAnswer}`)
   }
 
-  if (ctx.polymarket && ctx.polymarket.length > 0) {
-    lines.push(`  Polymarket (cross-market reference):`)
-    for (const p of ctx.polymarket) {
-      const vol = p.volume ? ` · vol ${p.volume}` : ''
-      lines.push(`    • "${p.question}" — YES ${p.yesPrice}¢ / NO ${p.noPrice}¢${vol}`)
-    }
+  if (ctx.polymarketSignal) {
+    lines.push(`  Cross-venue price (Polymarket): ${ctx.polymarketSignal}`)
   }
 
   for (const item of ctx.news) {

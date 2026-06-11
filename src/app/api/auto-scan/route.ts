@@ -251,7 +251,7 @@ export async function POST(req: NextRequest) {
     const relevantLessons = getRelevantLessons(scanCategory, scanKeywords, 5)
 
     const systemPrompt = buildScannerSystemPrompt(calibration, relevantLessons)
-    const userMessage = buildScannerUserMessage(normalized, views, session, signalMap, webContextMap)
+    const userMessage = buildScannerUserMessage(normalized, views, session, signalMap, webContextMap, calibration)
 
     const rawResult = await callClaude(settings.anthropic_api_key, systemPrompt, userMessage)
 
@@ -276,17 +276,48 @@ export async function POST(req: NextRequest) {
     // Build a ticker → market map for price lookup
     const marketByTicker = new Map(normalized.map((m) => [m.id, m]))
 
-    // Attach live prices to each opportunity
+    // Recompute effective edge in code: shrink Claude's estimate toward market
+    // price, subtract Kalshi trading fee, filter weak signals.
+    // Shrinkage: 60% market / 40% Claude (conservative until calibration proves otherwise)
+    // Fee: 0.07 × P × (1−P) per contract (Kalshi's standard maker/taker fee)
+    const SHRINK_MARKET = 0.60
+    const SHRINK_CLAUDE = 0.40
+    const MIN_EFFECTIVE_EDGE = 0.07 // 7pp after fees and shrinkage
+
     const opportunities = (scanResult.opportunities || []).map((opp: any) => {
       const market = marketByTicker.get(opp.ticker)
+      const p_claude = (opp.my_estimate_pct ?? 50) / 100
+      const p_market = (opp.market_price_pct ?? 50) / 100
+      const p_shrunk = SHRINK_MARKET * p_market + SHRINK_CLAUDE * p_claude
+
+      // Use the correct execution price for each side
+      // YES buyer pays YES ask; NO buyer pays NO ask (= 1 - YES bid, but we only have ask)
+      const yes_ask = market?.yes_price ?? p_market
+      const no_ask = market?.no_price ?? (1 - p_market)
+      const execution_price = opp.direction === 'YES' ? yes_ask : no_ask
+
+      // Kalshi fee: 0.07 × P × (1−P) where P is execution price
+      const fee = 0.07 * execution_price * (1 - execution_price)
+
+      // Effective edge: shrunk estimate vs execution price, minus fee
+      const raw_edge = opp.direction === 'YES'
+        ? p_shrunk - execution_price
+        : (1 - p_shrunk) - execution_price
+      const effective_edge_pct = (raw_edge - fee) * 100
+
       return {
         ...opp,
+        edge_pct: parseFloat(effective_edge_pct.toFixed(2)),
         yes_price: market?.yes_price ?? null,
         no_price: market?.no_price ?? null,
         volume_24h: market?.volume_24h ?? null,
         resolution_date: market?.resolution_date ?? null,
       }
     })
+    // Filter out opportunities that don't clear the effective edge threshold
+    .filter((opp: any) => opp.edge_pct >= MIN_EFFECTIVE_EDGE * 100)
+    // Re-sort by effective edge descending
+    .sort((a: any, b: any) => b.edge_pct - a.edge_pct)
 
     // Auto-save scanner opportunities to calibration log (best-effort)
     try {

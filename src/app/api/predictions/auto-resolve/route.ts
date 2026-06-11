@@ -56,8 +56,15 @@ export async function POST() {
         const resolved = resolvePrediction(pred.id, outcome)
         const was_correct = resolved.direction === outcome
 
-        // Fire-and-forget lesson extraction for losses
-        if (!was_correct && settings.anthropic_api_key) {
+        // Only generate lessons for significant misses — a calibrated model loses ~30% of
+        // 70% predictions; learning from those is noise. Focus on genuine surprises.
+        const predicted = resolved.predicted_probability ?? 0.5
+        const actual = outcome === 'YES' ? 1 : 0
+        const error = Math.abs(predicted - actual)
+        const shouldLearn = error > 0.35 // only if we were badly wrong (>35pp off)
+
+        // Fire-and-forget lesson extraction only for big misses
+        if (shouldLearn && settings.anthropic_api_key) {
           extractLessonForPrediction(resolved, settings.anthropic_api_key).catch(() => {})
         }
 

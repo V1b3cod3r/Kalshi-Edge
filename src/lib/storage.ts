@@ -226,8 +226,16 @@ export function getCalibrationStats(): CalibrationStats {
     resolved_predictions: resolved.length,
     overall_accuracy: 0,
     brier_score: 0.25,
+    claude_brier: 0.25,
+    market_brier: null,
+    claude_vs_market: 'Insufficient data',
     yes_bias: 0,
     recent_accuracy: 0,
+    recent_win_rate: null,
+    by_source: {
+      scanner: { count: 0, brier: null, win_rate: null },
+      analyze: { count: 0, brier: null, win_rate: null },
+    },
     by_category: {},
   }
 
@@ -237,7 +245,7 @@ export function getCalibrationStats(): CalibrationStats {
   const correct = resolved.filter((p) => p.direction === p.outcome)
   const overall_accuracy = correct.length / resolved.length
 
-  // Brier score: (predicted_prob_for_yes - actual_yes_outcome)^2
+  // Claude's Brier score: (predicted_prob_for_yes - actual_yes_outcome)^2
   // predicted_prob_for_yes = p.predicted_probability (always the P(YES))
   // actual = 1 if outcome=YES, 0 if outcome=NO
   const brierSum = resolved.reduce((sum, p) => {
@@ -245,25 +253,72 @@ export function getCalibrationStats(): CalibrationStats {
     return sum + Math.pow(p.predicted_probability - actual, 2)
   }, 0)
   const brier_score = brierSum / resolved.length
+  const claude_brier = brier_score
 
-  // YES bias: avg predicted_probability among NO outcomes minus 0.5
-  // Positive = model over-predicts YES (assigns high P(YES) even when NO wins)
-  const noOutcomes = resolved.filter((p) => p.outcome === 'NO')
-  const yesOutcomes = resolved.filter((p) => p.outcome === 'YES')
-  let yes_bias = 0
-  if (noOutcomes.length > 0 && yesOutcomes.length > 0) {
-    const avgProbWhenNo = noOutcomes.reduce((s, p) => s + p.predicted_probability, 0) / noOutcomes.length
-    const avgProbWhenYes = yesOutcomes.reduce((s, p) => s + p.predicted_probability, 0) / yesOutcomes.length
-    // If well calibrated: avgProbWhenYes > 0.5, avgProbWhenNo < 0.5
-    // Bias = how much higher avgProbWhenNo is than expected (0 = perfect, >0 = over-predicts YES)
-    yes_bias = avgProbWhenNo - (1 - overall_accuracy)
+  // Market Brier score: (market_price - actual_outcome)^2
+  const resolvedWithMarket = resolved.filter((p) => p.market_price != null)
+  let market_brier: number | null = null
+  if (resolvedWithMarket.length > 0) {
+    const marketBrierSum = resolvedWithMarket.reduce((sum, p) => {
+      const actual = p.outcome === 'YES' ? 1 : 0
+      return sum + Math.pow(p.market_price - actual, 2)
+    }, 0)
+    market_brier = parseFloat((marketBrierSum / resolvedWithMarket.length).toFixed(4))
   }
+
+  // Claude vs market comparison string
+  let claude_vs_market: string
+  if (resolved.length < 10) {
+    claude_vs_market = 'Insufficient data'
+  } else if (market_brier === null) {
+    claude_vs_market = 'Insufficient data'
+  } else if (claude_brier < market_brier) {
+    claude_vs_market = `Claude beats market (${claude_brier.toFixed(2)} vs ${market_brier.toFixed(2)})`
+  } else {
+    claude_vs_market = `Market beats Claude (${market_brier.toFixed(2)} vs ${claude_brier.toFixed(2)})`
+  }
+
+  // YES bias: mean predicted P(YES) minus observed YES rate
+  // Positive = Claude systematically overestimates YES probability
+  // Negative = underestimates
+  const resolvedWithProb = resolved.filter(p => p.predicted_probability != null)
+  const mean_predicted_yes = resolvedWithProb.length > 0
+    ? resolvedWithProb.reduce((s, p) => s + p.predicted_probability, 0) / resolvedWithProb.length
+    : 0.5
+  const observed_yes_rate = resolved.length > 0
+    ? resolved.filter(p => p.outcome === 'YES').length / resolved.length
+    : 0.5
+  const yes_bias = parseFloat((mean_predicted_yes - observed_yes_rate).toFixed(3))
 
   // Recent accuracy (last 10 resolved)
   const recent10 = resolved.slice(0, 10)
   const recent_accuracy = recent10.length > 0
     ? recent10.filter((p) => p.direction === p.outcome).length / recent10.length
     : 0
+
+  // recent_win_rate: null when fewer than 10 resolved predictions (insufficient data)
+  const recent_win_rate: number | null = resolved.length >= 10 ? recent_accuracy : null
+
+  // Source segmentation: scanner vs analyze
+  function computeSourceStats(source: 'scanner' | 'analyze') {
+    const preds = resolved.filter(p => p.source === source)
+    if (preds.length === 0) return { count: 0, brier: null, win_rate: null }
+    const bSum = preds.reduce((s, p) => {
+      const actual = p.outcome === 'YES' ? 1 : 0
+      return s + Math.pow(p.predicted_probability - actual, 2)
+    }, 0)
+    const correctCount = preds.filter(p => p.direction === p.outcome).length
+    return {
+      count: preds.length,
+      brier: parseFloat((bSum / preds.length).toFixed(4)),
+      win_rate: parseFloat((correctCount / preds.length).toFixed(3)),
+    }
+  }
+
+  const by_source = {
+    scanner: computeSourceStats('scanner'),
+    analyze: computeSourceStats('analyze'),
+  }
 
   // Per-category stats
   const by_category: CalibrationStats['by_category'] = {}
@@ -286,8 +341,13 @@ export function getCalibrationStats(): CalibrationStats {
     resolved_predictions: resolved.length,
     overall_accuracy,
     brier_score,
+    claude_brier,
+    market_brier,
+    claude_vs_market,
     yes_bias,
     recent_accuracy,
+    recent_win_rate,
+    by_source,
     by_category,
   }
 }

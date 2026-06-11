@@ -86,8 +86,16 @@ export interface CalibrationStats {
   resolved_predictions: number
   overall_accuracy: number      // fraction where bet direction matched outcome
   brier_score: number           // lower is better; 0.25 = random; 0 = perfect
-  yes_bias: number              // positive = over-predicts YES; negative = over-predicts NO
+  yes_bias: number              // mean predicted P(YES) minus observed YES rate; positive = over-predicts YES
   recent_accuracy: number       // accuracy on last 10 resolved predictions
+  recent_win_rate: number | null // null when fewer than 10 resolved predictions (insufficient data)
+  claude_brier: number          // alias for brier_score, explicit label
+  market_brier: number | null   // market's Brier score over same resolved predictions; null if no market_price data
+  claude_vs_market: string      // human-readable comparison string
+  by_source: {
+    scanner: { count: number; brier: number | null; win_rate: number | null }
+    analyze: { count: number; brier: number | null; win_rate: number | null }
+  }
   by_category: Record<string, { predictions: number; accuracy: number; brier: number }>
 }
 

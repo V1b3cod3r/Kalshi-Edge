@@ -234,7 +234,7 @@ If no edge exists: output NO BET — market appears fairly priced with brief rea
 - **Show your work**: Always explain the reasoning behind your probability estimate.
 - **Flag uncertainty**: If you don't have enough information to estimate confidently, say so explicitly.
 - **Avoid recency bias**: Anchor to base rates.
-- **Avoid anchoring to market price**: The market price is a hypothesis to test, not a prior.
+- **Market price as prior**: The market price is your prior. To deviate from it, you must name specific information or reasoning the market participants do not have. Unexplained disagreement with a liquid price is estimation error, not edge.
 - **Be concise**: Give the key evidence points only. Quality over quantity.${calibrationSection}${buildLessonsSection(lessons)}`
 }
 
@@ -282,6 +282,10 @@ For each market:
 - THIN: volume <$500
 - CORR: correlated with an existing position
 
+## SPORTS MARKETS
+
+SPORTS MARKETS: Without access to sportsbook lines (which price in sharp money), sports markets should be skipped unless you have a specific, quantifiable informational edge. Do not analyze sports markets as BET unless you can cite a concrete data source that contradicts the market price.
+
 ## Output Format
 
 Respond with ONLY a valid JSON object. No markdown, no code fences, no extra text. Just the raw JSON.
@@ -326,8 +330,9 @@ export function buildAnalysisUserMessage(
   session: SessionState,
   signals: Signal[] = [],
   webContext?: WebContext,
+  calibration?: CalibrationStats,
 ): string {
-  let msg = ''
+  let msg = `Current date: ${new Date().toISOString().split('T')[0]}\n\n`
 
   if (views.length > 0) {
     msg += 'VIEWS:\n'
@@ -354,7 +359,9 @@ export function buildAnalysisUserMessage(
   msg += `current_bankroll: $${session.current_bankroll.toLocaleString()}\n`
   msg += `starting_bankroll: $${session.starting_bankroll.toLocaleString()}\n`
   msg += `kelly_modifier: ${session.kelly_modifier}\n`
-  msg += `recent_win_rate: ${session.recent_win_rate}\n`
+  if (calibration && calibration.resolved_predictions >= 10) {
+    msg += `recent_win_rate: ${session.recent_win_rate}\n`
+  }
   msg += `max_new_positions: ${session.max_new_positions}\n`
 
   if (session.avoid_categories.length > 0) {
@@ -496,8 +503,9 @@ export function buildScannerUserMessage(
   session: SessionState,
   signalMap: Map<string, Signal[]> = new Map(),
   webContextMap: Map<string, WebContext> = new Map(),
+  calibration?: CalibrationStats,
 ): string {
-  let msg = ''
+  let msg = `Current date: ${new Date().toISOString().split('T')[0]}\n\n`
 
   if (views.length > 0) {
     msg += 'VIEWS:\n'
@@ -520,7 +528,9 @@ export function buildScannerUserMessage(
   msg += `SESSION:\n`
   msg += `current_bankroll: $${session.current_bankroll.toLocaleString()}\n`
   msg += `kelly_modifier: ${session.kelly_modifier}\n`
-  msg += `recent_win_rate: ${session.recent_win_rate}\n`
+  if (calibration && calibration.resolved_predictions >= 10) {
+    msg += `recent_win_rate: ${session.recent_win_rate}\n`
+  }
 
   if (session.positions.length > 0) {
     msg += `positions:\n`

@@ -337,6 +337,8 @@ export default function ScannerPage() {
   const [autoMinVolume, setAutoMinVolume] = useState(500)
   const [scanPhase, setScanPhase] = useState<ScanPhase>('idle')
   const [marketsFound, setMarketsFound] = useState(0)
+  const [progressMessage, setProgressMessage] = useState('')
+  const [fetchedCount, setFetchedCount] = useState(0)
   const [opportunities, setOpportunities] = useState<Opportunity[]>([])
   const [screenedOut, setScreenedOut] = useState<ScreenedOut[]>([])
   const [sessionNotes, setSessionNotes] = useState('')
@@ -359,10 +361,11 @@ export default function ScannerPage() {
     setSessionNotes('')
     setScanPhase('fetching')
     setMarketsFound(0)
+    setProgressMessage('Fetching open markets from Kalshi...')
+    setFetchedCount(0)
 
     try {
-      setScanPhase('scanning')
-      const scanRes = await fetch('/api/auto-scan', {
+      const res = await fetch('/api/auto-scan/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -372,19 +375,51 @@ export default function ScannerPage() {
         }),
       })
 
-      const scanData = await scanRes.json()
-      if (!scanRes.ok) throw new Error(scanData.error || 'Scan failed')
+      if (!res.ok || !res.body) {
+        const errData = await res.json().catch(() => ({}))
+        throw new Error((errData as any).error || 'Scan failed')
+      }
 
-      setMarketsFound(scanData.markets_scanned || 0)
-      const opportunities = scanData.opportunities || []
-      setOpportunities(opportunities)
-      setScreenedOut(scanData.screened_out || [])
-      setSessionNotes(scanData.session_notes || '')
-      setScanPhase('done')
-      try { sessionStorage.setItem('last_scan_opportunities', JSON.stringify(opportunities)) } catch {}
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
 
-      // Background: auto-resolve any pending predictions that Kalshi has settled
-      fetch('/api/predictions/auto-resolve', { method: 'POST' }).catch(() => {})
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        const text = decoder.decode(value)
+        for (const line of text.split('\n')) {
+          if (!line.startsWith('data: ')) continue
+          let event: any
+          try { event = JSON.parse(line.slice(6)) } catch { continue }
+
+          if (event.type === 'progress') {
+            setProgressMessage(event.message)
+            if (event.phase === 'fetching') {
+              setScanPhase('fetching')
+              setFetchedCount(event.count ?? 0)
+            } else {
+              // For filtering/analyzing phases, preserve the total fetched count
+              // so the "Found X markets" sub-line keeps showing
+              if (event.phase === 'filtering') {
+                setFetchedCount(event.count ?? 0)
+              }
+              setScanPhase('scanning')
+            }
+          } else if (event.type === 'done') {
+            setMarketsFound(event.markets_scanned || 0)
+            const opportunities = event.opportunities || []
+            setOpportunities(opportunities)
+            setScreenedOut(event.screened_out || [])
+            setSessionNotes(event.session_notes || '')
+            setScanPhase('done')
+            try { sessionStorage.setItem('last_scan_opportunities', JSON.stringify(opportunities)) } catch {}
+            // Background: auto-resolve any pending predictions that Kalshi has settled
+            fetch('/api/predictions/auto-resolve', { method: 'POST' }).catch(() => {})
+          } else if (event.type === 'error') {
+            throw new Error(event.message || 'Auto-scan failed')
+          }
+        }
+      }
     } catch (err: any) {
       setToast({ message: err.message || 'Auto-scan failed', type: 'error' })
       setScanPhase('idle')
@@ -470,18 +505,30 @@ export default function ScannerPage() {
         </div>
 
         {isScanning && (
-          <div className="mb-4 p-3 rounded-lg flex items-center gap-3" style={{ backgroundColor: '#1a1a35', border: '1px solid #6366f130' }}>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#6366f1" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="animate-spin flex-shrink-0">
+          <div className="mb-4 p-3 rounded-lg flex items-start gap-3" style={{ backgroundColor: '#1a1a35', border: '1px solid #6366f130' }}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#6366f1" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="animate-spin flex-shrink-0 mt-0.5">
               <line x1="12" y1="2" x2="12" y2="6"/><line x1="12" y1="18" x2="12" y2="22"/>
               <line x1="4.93" y1="4.93" x2="7.76" y2="7.76"/><line x1="16.24" y1="16.24" x2="19.07" y2="19.07"/>
               <line x1="2" y1="12" x2="6" y2="12"/><line x1="18" y1="12" x2="22" y2="12"/>
               <line x1="4.93" y1="19.07" x2="7.76" y2="16.24"/><line x1="16.24" y1="7.76" x2="19.07" y2="4.93"/>
             </svg>
-            <span className="text-sm" style={{ color: '#a5b4fc' }}>
-              {scanPhase === 'fetching'
-                ? 'Fetching live markets from Kalshi...'
-                : `Analyzing markets with Claude — this takes ~30 seconds...`}
-            </span>
+            <div>
+              <span className="text-sm" style={{ color: '#a5b4fc' }}>
+                {progressMessage || (scanPhase === 'fetching'
+                  ? 'Fetching live markets from Kalshi...'
+                  : 'Analyzing markets with Claude — this takes ~30 seconds...')}
+              </span>
+              {scanPhase === 'fetching' && fetchedCount > 0 && (
+                <div className="text-xs mt-1" style={{ color: '#6366f1' }}>
+                  {fetchedCount.toLocaleString()} markets found so far...
+                </div>
+              )}
+              {scanPhase === 'scanning' && fetchedCount > 0 && (
+                <div className="text-xs mt-1" style={{ color: '#6366f1' }}>
+                  Found {fetchedCount.toLocaleString()} markets &rarr; filtered to {autoLimit} candidates
+                </div>
+              )}
+            </div>
           </div>
         )}
 

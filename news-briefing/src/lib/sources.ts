@@ -154,4 +154,11 @@ export const SOURCES: SourceFeed[] = [
     url: "https://marginalrevolution.com/feed",
     recencyHours: DAILY,
   },
+  // Project Syndicate — global economics/policy commentaries
+  {
+    id: "ps",
+    name: "Project Syndicate",
+    url: "https://www.project-syndicate.org/rss",
+    recencyHours: DAILY,
+  },
 ];

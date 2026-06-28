@@ -13,6 +13,7 @@ const COLORS: Record<SourceId, string> = {
   bbc: "bg-[#bb1919] text-white",
   guardian: "bg-[#052962] text-white",
   mr: "bg-[#3a3a3c] text-white",
+  ps: "bg-[#1a1a2e] text-[#e0a526]",
 };
 
 const LABELS: Record<SourceId, string> = {
@@ -28,6 +29,7 @@ const LABELS: Record<SourceId, string> = {
   bbc: "BBC",
   guardian: "Guardian",
   mr: "MR",
+  ps: "Project Syndicate",
 };
 
 export function SourceBadge({ source }: { source: SourceId }) {

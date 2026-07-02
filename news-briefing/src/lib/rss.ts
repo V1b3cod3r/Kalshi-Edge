@@ -1,6 +1,6 @@
 import { XMLParser } from "fast-xml-parser";
 import { SOURCES } from "./sources";
-import type { RawArticle, SourceFeed } from "./types";
+import type { RawArticle, SourceFeed, SourceHealth, SourceId } from "./types";
 
 const parser = new XMLParser({
   ignoreAttributes: false,
@@ -35,14 +35,19 @@ function asText(v: unknown): string {
   return String(v);
 }
 
-export async function fetchFeed(feed: SourceFeed, forceFresh = false): Promise<RawArticle[]> {
+interface FeedFetchResult {
+  ok: boolean;
+  articles: RawArticle[];
+}
+
+async function fetchFeedRaw(feed: SourceFeed, forceFresh: boolean): Promise<FeedFetchResult> {
   const res = await fetch(feed.url, {
     headers: { "User-Agent": UA, Accept: "application/rss+xml, application/xml, text/xml" },
     // 5-min cache normally so auto-loads are cheap; force=true bypasses
     // entirely so the refresh button actually pulls today's latest.
     ...(forceFresh ? { cache: "no-store" as const } : { next: { revalidate: 300 } }),
   });
-  if (!res.ok) return [];
+  if (!res.ok) return { ok: false, articles: [] };
   const xml = await res.text();
   const parsed = parser.parse(xml);
   const items = parsed?.rss?.channel?.item ?? parsed?.feed?.entry ?? [];
@@ -50,7 +55,7 @@ export async function fetchFeed(feed: SourceFeed, forceFresh = false): Promise<R
 
   const cutoff = Date.now() - feed.recencyHours * 60 * 60 * 1000;
 
-  return list.flatMap((item: Record<string, unknown>): RawArticle[] => {
+  const articles = list.flatMap((item: Record<string, unknown>): RawArticle[] => {
     const title = stripHtml(asText(item.title));
     const description = stripHtml(
       asText(item.description ?? item.summary ?? item["content:encoded"] ?? ""),
@@ -81,6 +86,17 @@ export async function fetchFeed(feed: SourceFeed, forceFresh = false): Promise<R
       },
     ];
   });
+
+  return { ok: true, articles };
+}
+
+export async function fetchFeed(feed: SourceFeed, forceFresh = false): Promise<RawArticle[]> {
+  try {
+    const { articles } = await fetchFeedRaw(feed, forceFresh);
+    return articles;
+  } catch {
+    return [];
+  }
 }
 
 function dedupe(articles: RawArticle[]): RawArticle[] {
@@ -95,10 +111,35 @@ function dedupe(articles: RawArticle[]): RawArticle[] {
   return out;
 }
 
-export async function fetchAllArticles(forceFresh = false): Promise<RawArticle[]> {
-  const results = await Promise.allSettled(
-    SOURCES.map((feed) => fetchFeed(feed, forceFresh)),
+export interface FetchAllResult {
+  articles: RawArticle[];
+  /** Sources where every configured feed URL failed this pull. */
+  downSources: SourceHealth[];
+}
+
+export async function fetchAllArticles(forceFresh = false): Promise<FetchAllResult> {
+  const settled = await Promise.allSettled(
+    SOURCES.map((feed) => fetchFeedRaw(feed, forceFresh)),
   );
-  const all = results.flatMap((r) => (r.status === "fulfilled" ? r.value : []));
-  return dedupe(all);
+
+  // Multiple feeds can share a source id (e.g. WSJ has 3 RSS URLs) — only
+  // flag a source as down if EVERY one of its feeds failed this pull, so a
+  // single bad URL doesn't falsely report the whole outlet as unreachable.
+  const bySource = new Map<SourceId, { sourceName: string; anyOk: boolean }>();
+  const allArticles: RawArticle[] = [];
+  settled.forEach((r, i) => {
+    const feed = SOURCES[i];
+    const entry = bySource.get(feed.id) ?? { sourceName: feed.name, anyOk: false };
+    if (r.status === "fulfilled") {
+      entry.anyOk = entry.anyOk || r.value.ok;
+      allArticles.push(...r.value.articles);
+    }
+    bySource.set(feed.id, entry);
+  });
+
+  const downSources: SourceHealth[] = [...bySource.entries()]
+    .filter(([, v]) => !v.anyOk)
+    .map(([source, v]) => ({ source, sourceName: v.sourceName }));
+
+  return { articles: dedupe(allArticles), downSources };
 }

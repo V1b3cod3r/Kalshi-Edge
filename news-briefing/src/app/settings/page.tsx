@@ -13,6 +13,8 @@ import {
   type ModelId,
 } from "@/lib/models";
 
+const MAX_INTERESTS = 30;
+
 export default function SettingsPage() {
   const router = useRouter();
   const [interests, setInterests] = useState<string[]>([]);
@@ -26,9 +28,11 @@ export default function SettingsPage() {
     setHydrated(true);
   }, []);
 
+  const atCap = interests.length >= MAX_INTERESTS;
+
   function add() {
     const v = draft.trim();
-    if (!v) return;
+    if (!v || atCap) return;
     if (interests.includes(v)) {
       setDraft("");
       return;
@@ -48,12 +52,6 @@ export default function SettingsPage() {
   function resetDefaults() {
     setInterests(DEFAULT_INTERESTS);
     saveInterests(DEFAULT_INTERESTS);
-  }
-
-  function setScoring(id: ModelId) {
-    const next = { ...models, scoring: id };
-    setModels(next);
-    saveModels(next);
   }
 
   function setSummary(id: ModelId) {
@@ -86,19 +84,23 @@ export default function SettingsPage() {
                   add();
                 }
               }}
+              disabled={atCap}
               placeholder="e.g. central bank policy in Asia"
-              className="flex-1 rounded-xl border border-surface-line bg-surface-tint px-4 py-3 text-[15px] text-ink placeholder:text-ink-faint focus:outline-none focus:border-accent"
+              className="flex-1 rounded-xl border border-surface-line bg-surface-tint px-4 py-3 text-[15px] text-ink placeholder:text-ink-faint focus:outline-none focus:border-accent disabled:opacity-50"
             />
             <button
               type="button"
               onClick={add}
-              className="pressable rounded-xl bg-accent px-5 py-3 text-[15px] font-medium text-white"
+              disabled={atCap}
+              className="pressable rounded-xl bg-accent px-5 py-3 text-[15px] font-medium text-white disabled:opacity-50"
             >
               Add
             </button>
           </div>
           <p className="mt-3 text-[12px] text-ink-faint">
-            Be specific. &ldquo;US small-cap earnings&rdquo; works better than &ldquo;business news.&rdquo;
+            {atCap
+              ? `Maximum ${MAX_INTERESTS} interests reached. Remove one to add another.`
+              : 'Be specific. “US small-cap earnings” works better than “business news.”'}
           </p>
         </section>
 
@@ -140,17 +142,8 @@ export default function SettingsPage() {
         </section>
 
         <ModelPicker
-          title="Relevance scoring"
-          description="Ranks each candidate article against your interests. Cheap calls; Haiku is plenty here."
-          costField="scoringCostHint"
-          value={models.scoring}
-          onChange={setScoring}
-        />
-
-        <ModelPicker
           title="Summaries"
           description="Writes the 6–8 sentence summary for each article. Sonnet writes more elegant prose; Haiku is 3× cheaper."
-          costField="summaryCostHint"
           value={models.summary}
           onChange={setSummary}
         />

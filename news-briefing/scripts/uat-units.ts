@@ -2,6 +2,7 @@
 // in the audit so I can confirm bugs before fixing them.
 import { prefilter } from "../src/lib/prefilter";
 import { formatRelative } from "../src/lib/time";
+import { recencyAdjustment } from "../src/lib/briefing";
 import type { RawArticle } from "../src/lib/types";
 
 let failed = 0;
@@ -81,6 +82,35 @@ ok("time: 2w ago", formatRelative("2026-04-18T12:00:00Z", NOW) === "2w ago");
 ok(
   "time: 6 months ago -> date string",
   /[A-Z][a-z]{2} \d+/.test(formatRelative("2025-11-01T12:00:00Z", NOW)),
+);
+
+// --- recencyAdjustment ---
+function hoursAgo(h: number): string {
+  return new Date(Date.now() - h * 3_600_000).toISOString();
+}
+ok(
+  "recency: 20h-old daily-source article is docked -1",
+  recencyAdjustment(hoursAgo(20), "wsj") === -1,
+);
+ok(
+  "recency: 20h-old weekly-source (economist) article is NOT docked",
+  recencyAdjustment(hoursAgo(20), "economist") === 0,
+);
+ok(
+  "recency: 20h-old weekly-source (fed) article is NOT docked",
+  recencyAdjustment(hoursAgo(20), "fed") === 0,
+);
+ok(
+  "recency: 2h-old article (any source) still gets the fresh boost",
+  recencyAdjustment(hoursAgo(2), "wsj") === 2 && recencyAdjustment(hoursAgo(2), "economist") === 2,
+);
+ok(
+  "recency: invalid date on daily source docks -1",
+  recencyAdjustment("not-a-date", "wsj") === -1,
+);
+ok(
+  "recency: invalid date on weekly source does not dock",
+  recencyAdjustment("not-a-date", "economist") === 0,
 );
 
 console.log(`\n${failed === 0 ? "ALL PASS" : `${failed} FAILED`}`);

@@ -48,6 +48,11 @@ export interface RelatedArticle {
   link: string;
 }
 
+export interface SourceHealth {
+  source: SourceId;
+  sourceName: string;
+}
+
 export interface TokenUsage {
   input: number;
   output: number;
@@ -77,4 +82,6 @@ export interface Briefing {
    * Identified by cluster size: stories covered by multiple outlets. */
   topStories: SummarizedArticle[];
   cost: CostBreakdown;
+  /** Sources where every configured feed failed to fetch this pull. */
+  downSources: SourceHealth[];
 }

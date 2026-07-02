@@ -5,7 +5,6 @@ import { MODELS, type ModelId } from "@/lib/models";
 interface ModelPickerProps {
   title: string;
   description: string;
-  costField: "scoringCostHint" | "summaryCostHint";
   value: ModelId;
   onChange: (id: ModelId) => void;
 }
@@ -13,7 +12,6 @@ interface ModelPickerProps {
 export function ModelPicker({
   title,
   description,
-  costField,
   value,
   onChange,
 }: ModelPickerProps) {
@@ -39,7 +37,7 @@ export function ModelPicker({
                       {m.name}
                     </span>
                     <span className="text-[12px] text-ink-faint">
-                      {m[costField]}
+                      {m.summaryCostHint}
                     </span>
                   </div>
                   <p className="mt-0.5 text-[13px] text-ink-muted">{m.blurb}</p>

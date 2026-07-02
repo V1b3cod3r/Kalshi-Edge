@@ -28,12 +28,10 @@ export async function POST(req: NextRequest) {
   const force = body.refresh === true;
   const modelsInput =
     body.models && typeof body.models === "object" ? (body.models as Record<string, unknown>) : {};
-  const scoringModel = pickModel(modelsInput.scoring);
   const summaryModel = pickModel(modelsInput.summary);
 
   try {
     const briefing = await getCachedBriefing(interests, force, {
-      scoringModel,
       summaryModel,
     });
     return NextResponse.json(briefing);

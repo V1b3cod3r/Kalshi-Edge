@@ -123,28 +123,40 @@ export async function scoreRelevance(
 
   const userPayload = JSON.stringify({ interests, articles: indexed });
 
-  const res = await client.messages.create({
-    model,
-    max_tokens: 2000,
-    system: [
-      { type: "text", text: RELEVANCE_SYSTEM, cache_control: { type: "ephemeral" } },
-    ],
-    messages: [{ role: "user", content: userPayload }],
-  });
+  try {
+    const res = await client.messages.create({
+      model,
+      max_tokens: 2000,
+      system: [
+        { type: "text", text: RELEVANCE_SYSTEM, cache_control: { type: "ephemeral" } },
+      ],
+      messages: [{ role: "user", content: userPayload }],
+    });
 
-  const parsed = parseJson<ScoreResult>(textOf(res));
-  const byId = new Map(parsed.scores.map((s) => [s.id, s]));
+    const parsed = parseJson<ScoreResult>(textOf(res));
+    const byId = new Map(parsed.scores.map((s) => [s.id, s]));
 
-  const articles = candidates.map((c, i) => {
-    const s = byId.get(i);
-    return {
+    const articles = candidates.map((c, i) => {
+      const s = byId.get(i);
+      return {
+        ...c.article,
+        score: s?.score ?? 0,
+        matchedInterest: s?.interest && s.interest.length > 0 ? s.interest : null,
+      };
+    });
+
+    return { articles, usage: readUsage(res) };
+  } catch {
+    // Network error or malformed model output — fall back to the prefilter's
+    // keyword-match ranking so the briefing still builds instead of 500ing
+    // on a single bad LLM call.
+    const articles = candidates.map((c) => ({
       ...c.article,
-      score: s?.score ?? 0,
-      matchedInterest: s?.interest && s.interest.length > 0 ? s.interest : null,
-    };
-  });
-
-  return { articles, usage: readUsage(res) };
+      score: c.score,
+      matchedInterest: c.matchedInterest,
+    }));
+    return { articles, usage: EMPTY_USAGE };
+  }
 }
 
 /**
@@ -290,15 +302,20 @@ export async function summarizeArticles(
     });
   }
 
-  const results = await Promise.all(
+  // allSettled, not all: if one chunk's request fails outright (network
+  // blip, timeout), the other chunks' summaries should still make it into
+  // the briefing instead of the whole pull failing. Articles in a dropped
+  // chunk fall back to "Summary unavailable." (see assemble() in briefing.ts).
+  const results = await Promise.allSettled(
     chunks.map(({ slice, offset }) => summarizeChunk(slice, model, offset)),
   );
 
   const merged = new Map<number, string>();
   let total: TokenUsage = EMPTY_USAGE;
   for (const r of results) {
-    for (const [k, v] of r.summaries) merged.set(k, v);
-    total = addUsage(total, r.usage);
+    if (r.status !== "fulfilled") continue;
+    for (const [k, v] of r.value.summaries) merged.set(k, v);
+    total = addUsage(total, r.value.usage);
   }
   return { summaries: merged, usage: total };
 }

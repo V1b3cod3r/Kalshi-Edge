@@ -133,6 +133,13 @@ export default function BriefingPage() {
         refreshing={refreshing}
       />
       <div className="container-narrow">
+        {briefing && briefing.downSources.length > 0 && (
+          <div className="mb-4 rounded-xl bg-[#fff8e5] border border-[#f0dca3] px-4 py-3 text-[13px] text-[#8a6d1a]">
+            {briefing.downSources.map((s) => s.sourceName).join(", ")}{" "}
+            {briefing.downSources.length === 1 ? "is" : "are"} down right now —
+            today&apos;s briefing may be missing some coverage.
+          </div>
+        )}
         {empty ? (
           <div className="rounded-2xl bg-surface shadow-card p-8 text-center">
             <p className="text-[15px] text-ink-soft">

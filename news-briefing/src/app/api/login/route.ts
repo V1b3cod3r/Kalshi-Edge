@@ -12,6 +12,10 @@ export async function POST(req: NextRequest) {
   }
   const submitted = typeof body.password === "string" ? body.password : "";
   if (!checkPassword(submitted)) {
+    // Serverless functions don't share memory across invocations, so we
+    // can't track attempt counts cheaply here. A flat delay raises the
+    // cost of brute-forcing without needing external state.
+    await new Promise((r) => setTimeout(r, 1000));
     return NextResponse.json({ error: "wrong password" }, { status: 401 });
   }
   await setAuthCookie();

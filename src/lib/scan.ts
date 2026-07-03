@@ -55,54 +55,38 @@ export function normalizeMarket(m: any): MarketInput | null {
 
   // Use ask prices for order placement — bidding at ask fills immediately.
   // Midpoint would leave orders resting below the ask.
-  let yes_price: number | undefined
-  let no_price: number | undefined
 
-  // Helper: parse a price value that may be a string or number
-  const p = (v: any): number => (v == null ? 0 : Number(v))
-
-  const ya = p(m.yes_ask_dollars ?? m.yes_ask)
-  const yb = p(m.yes_bid_dollars ?? m.yes_bid)
-  const na = p(m.no_ask_dollars ?? m.no_ask)
-  const nb = p(m.no_bid_dollars ?? m.no_bid)
-  const last = p(m.last_price_dollars ?? m.last_price)
-
-  // YES ask (cost to buy YES)
-  if (ya > 0) {
-    yes_price = ya
-  } else if (yb > 0) {
-    yes_price = yb
-  } else if (na > 0) {
-    yes_price = 1 - na
-  } else if (nb > 0) {
-    yes_price = 1 - nb
-  } else if (last > 0) {
-    yes_price = last
+  // Parse a price into decimal dollars. Prefer the *_dollars field; the plain
+  // field is integer cents in Kalshi v2 (so a raw `1` means 1¢, not $1).
+  // Sub-1 values in the plain field are already dollars (legacy payloads).
+  const price = (dollarsV: any, centsV: any): number => {
+    if (dollarsV != null && Number(dollarsV) > 0) return Number(dollarsV)
+    const c = centsV == null ? 0 : Number(centsV)
+    if (!c || c <= 0) return 0
+    return c >= 1 ? c / 100 : c
   }
 
-  // NO ask (cost to buy NO)
-  if (na > 0) {
-    no_price = na
-  } else if (nb > 0) {
-    no_price = nb
-  }
+  const ya = price(m.yes_ask_dollars, m.yes_ask)
+  const yb = price(m.yes_bid_dollars, m.yes_bid)
+  const na = price(m.no_ask_dollars, m.no_ask)
+  const nb = price(m.no_bid_dollars, m.no_bid)
 
-  // Legacy cent-based prices (1–99): convert to decimal BEFORE deriving no_price
-  if (yes_price !== undefined && yes_price > 1) yes_price = yes_price / 100
-  if (no_price !== undefined && no_price > 1) no_price = no_price / 100
+  // YES ask (cost to buy YES): 1 − no_bid IS the yes ask. Never derive from
+  // 1 − no_ask — that's the yes BID, which understates cost by the full spread
+  // and manufactures phantom edge on thin markets.
+  const yes_price = ya > 0 ? ya : nb > 0 ? parseFloat((1 - nb).toFixed(4)) : undefined
+  // NO ask (cost to buy NO), mirrored: derive only from 1 − yes_bid.
+  const no_price = na > 0 ? na : yb > 0 ? parseFloat((1 - yb).toFixed(4)) : undefined
 
-  // Derive no_price from converted yes_price if not available directly
-  if (no_price === undefined && yes_price !== undefined) {
-    no_price = parseFloat((1 - yes_price).toFixed(4))
-  }
-
-  // No valid price found — drop the market
+  // Both sides must be quotable from a live orderbook. Markets with only a
+  // stale last_price have no real market to execute against — skip them
+  // (a "cheap-looking" stale print is staleness, not edge).
   if (!yes_price || !no_price) return null
 
   // Volume: always compute 24h dollar volume as contracts × midpoint price.
   // Kalshi's raw volume_24h is contract count; their _fp fields are inconsistent.
   // Computing ourselves gives a reliable dollar figure for filtering and display.
-  const contracts_24h = p(m.volume_24h) || 0
+  const contracts_24h = Number(m.volume_24h) || 0
   const mid = (yes_price + (1 - no_price)) / 2
   const volume_24h = contracts_24h * mid
 
@@ -362,16 +346,22 @@ export async function runScan(params: RunScanParams = {}): Promise<RunScanResult
   // Recompute effective edge in code: shrink Claude's estimate toward market
   // price, subtract Kalshi trading fee, filter weak signals.
   const opportunities: ScanOpportunity[] = (scanResult.opportunities || [])
+    // Drop opportunities whose ticker doesn't match a scanned market — a
+    // mangled/hallucinated ticker means we can't verify prices, so we can't
+    // trust (or execute) the trade. Fail-safe: skip.
+    .filter((opp) => marketByTicker.has(opp.ticker))
     .map((opp): ScanOpportunity => {
-      const market = marketByTicker.get(opp.ticker)
+      const market = marketByTicker.get(opp.ticker)!
       const p_claude = (opp.my_estimate_pct ?? 50) / 100
-      const p_market = (opp.market_price_pct ?? 50) / 100
+      // Anchor shrinkage on the REAL quote, never Claude's self-reported
+      // market price — 60% of the blend riding on a hallucinatable number
+      // would let the model manufacture its own edge.
+      const p_market = market.yes_price
       const p_shrunk = SHRINK_MARKET * p_market + SHRINK_CLAUDE * p_claude
 
-      // Use the correct execution price for each side
-      // YES buyer pays YES ask; NO buyer pays NO ask (= 1 - YES bid, but we only have ask)
-      const yes_ask = market?.yes_price ?? p_market
-      const no_ask = market?.no_price ?? (1 - p_market)
+      // Correct execution price per side: YES buyer pays YES ask; NO buyer pays NO ask
+      const yes_ask = market.yes_price
+      const no_ask = market.no_price
       const execution_price = opp.direction === 'YES' ? yes_ask : no_ask
 
       // Kalshi fee: 0.07 × P × (1−P) where P is execution price
@@ -392,9 +382,7 @@ export async function runScan(params: RunScanParams = {}): Promise<RunScanResult
         resolution_date: market?.resolution_date ?? null,
         category: market?.category ?? 'Other/General',
         p_shrunk,
-        // Only report an execution price when we actually have market data —
-        // consumers placing orders must skip on null (fail-safe).
-        execution_price: market ? execution_price : null,
+        execution_price,
       }
     })
     // Filter out opportunities that don't clear the effective edge threshold

@@ -63,20 +63,35 @@ function ensureDataDir() {
 function readJson<T>(filePath: string, defaultValue: T): T {
   ensureDataDir()
   if (!fs.existsSync(filePath)) {
-    fs.writeFileSync(filePath, JSON.stringify(defaultValue, null, 2))
+    writeJson(filePath, defaultValue)
     return defaultValue
   }
   try {
     const content = fs.readFileSync(filePath, 'utf-8')
     return JSON.parse(content) as T
-  } catch {
+  } catch (err) {
+    // NEVER silently substitute defaults for a corrupt file: the next save
+    // would persist those defaults and permanently erase the real history
+    // (bankroll, predictions, calibration). Preserve the corrupt file aside
+    // for manual recovery and scream about it.
+    const backup = `${filePath}.corrupt-${Date.now()}`
+    try { fs.renameSync(filePath, backup) } catch {}
+    console.error(
+      `[storage] CORRUPT DATA FILE: ${filePath} failed to parse and was moved to ${backup}. ` +
+      `Falling back to defaults — recover the backup manually if this file mattered.`,
+      err
+    )
     return defaultValue
   }
 }
 
 function writeJson<T>(filePath: string, data: T): void {
   ensureDataDir()
-  fs.writeFileSync(filePath, JSON.stringify(data, null, 2))
+  // Atomic write: a crash mid-write must never leave torn JSON at the real
+  // path (torn JSON reads as "corrupt" and triggers the recovery path above).
+  const tmp = `${filePath}.tmp`
+  fs.writeFileSync(tmp, JSON.stringify(data, null, 2))
+  fs.renameSync(tmp, filePath)
 }
 
 // Views CRUD

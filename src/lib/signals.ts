@@ -320,9 +320,13 @@ async function fedWatchSignal(): Promise<Signal[]> {
   const MONTH_CODES = 'FGHJKMNQUVXZ'
 
   const today = new Date()
+  // Dates parse as UTC midnight — treat a meeting as upcoming through
+  // end-of-day UTC so the signal doesn't roll to the next meeting on
+  // the decision day itself.
+  const DAY_MS = 24 * 60 * 60 * 1000
   const upcomingMeetings = FOMC_DATES
     .map((d) => new Date(d))
-    .filter((d) => d >= today)
+    .filter((d) => d.getTime() + DAY_MS > today.getTime())
     .sort((a, b) => a.getTime() - b.getTime())
 
   if (upcomingMeetings.length === 0) return []
@@ -564,9 +568,6 @@ async function oilSignals(): Promise<Signal[]> {
  */
 export async function clevelandFedNowcastSignal(): Promise<string> {
   try {
-    // The Cleveland Fed publishes nowcast data as a downloadable CSV/XLSX from their
-    // indicators page. Try the known public data endpoint pattern.
-    const url = 'https://www.clevelandfed.org/-/media/project/clevelandfedtenant/clevelandfedsite/indicators-and-data/inflation-nowcasting/inflation-nowcasting-data-2024.xlsx'
     // The actual data page embeds JSON in the page for their chart widgets.
     // Use the public API endpoint that their dashboard page calls.
     const apiUrl = 'https://www.clevelandfed.org/api/indicators/inflation-nowcasting/current'
@@ -585,13 +586,24 @@ export async function clevelandFedNowcastSignal(): Promise<string> {
       }
     }
 
-    // Fallback: try the public page for structured data via a text scrape
+    // Fallback: try the public page for structured data via a text scrape.
+    // Only trust a CPI percentage that appears near the word "nowcast" — a bare
+    // /CPI.*%/ match could grab any unrelated percentage on the page.
     const pageText = await fetchText('https://www.clevelandfed.org/indicators-and-data/inflation-nowcasting')
     if (pageText) {
-      // Look for patterns like "2.4%" or "CPI: 2.4" in the page text
-      const match = pageText.match(/CPI[^0-9]*?(\d+\.\d+)\s*%/i)
-      if (match) {
-        return `Cleveland Fed Inflation Nowcast: CPI YoY ≈ ${match[1]}% (as of ${todayStr()})\nUse this as the anchor probability for CPI bracket markets resolving within 30 days.`
+      const nowcastRe = /nowcast/gi
+      let nm: RegExpExecArray | null
+      while ((nm = nowcastRe.exec(pageText)) !== null) {
+        // Examine a window of text around each "nowcast" occurrence
+        const windowText = pageText.slice(Math.max(0, nm.index - 300), nm.index + 300)
+        const match = windowText.match(/CPI[^0-9]*?(\d+\.\d+)\s*%/i)
+        if (match) {
+          const value = parseFloat(match[1])
+          // Sanity range check: a plausible CPI YoY nowcast is 0–15%
+          if (value >= 0 && value <= 15) {
+            return `Cleveland Fed Inflation Nowcast: CPI YoY ≈ ${match[1]}% (as of ${todayStr()})\nUse this as the anchor probability for CPI bracket markets resolving within 30 days.`
+          }
+        }
       }
     }
     return ''
@@ -600,15 +612,35 @@ export async function clevelandFedNowcastSignal(): Promise<string> {
   }
 }
 
+// Cities Kalshi actually runs weather markets on. Keys are lowercase
+// substrings matched against the market title.
+const WEATHER_CITIES: Array<{ match: string; label: string; lat: number; lon: number }> = [
+  { match: 'new york', label: 'New York', lat: 40.71, lon: -74.01 },
+  { match: 'nyc', label: 'New York', lat: 40.71, lon: -74.01 },
+  { match: 'chicago', label: 'Chicago', lat: 41.88, lon: -87.63 },
+  { match: 'miami', label: 'Miami', lat: 25.76, lon: -80.19 },
+  { match: 'austin', label: 'Austin', lat: 30.27, lon: -97.74 },
+  { match: 'denver', label: 'Denver', lat: 39.74, lon: -104.99 },
+  { match: 'los angeles', label: 'Los Angeles', lat: 34.05, lon: -118.24 },
+  { match: 'philadelphia', label: 'Philadelphia', lat: 39.95, lon: -75.17 },
+  { match: 'houston', label: 'Houston', lat: 29.76, lon: -95.37 },
+]
+
 /**
- * NWS 7-day weather forecast for a given lat/lon (defaults to New York City).
+ * NWS 7-day weather forecast for the city named in the market title.
  * Uses the free National Weather Service API (no key required).
+ * Returns '' if the title doesn't name a known market city — never sends
+ * one city's forecast for another city's market.
  */
-export async function nwsWeatherSignal(location?: string): Promise<string> {
+export async function nwsWeatherSignal(marketTitle?: string): Promise<string> {
   try {
-    // Default: New York City (lat 40.71, lon -74.01)
-    const pointsUrl = 'https://api.weather.gov/points/40.71,-74.01'
-    const locationLabel = location ?? 'NYC'
+    if (!marketTitle) return ''
+    const titleLower = marketTitle.toLowerCase()
+    const city = WEATHER_CITIES.find((c) => titleLower.includes(c.match))
+    if (!city) return ''
+
+    const pointsUrl = `https://api.weather.gov/points/${city.lat},${city.lon}`
+    const locationLabel = city.label
 
     const pointsData = await fetchJson(pointsUrl)
     const forecastUrl: string | undefined = pointsData?.properties?.forecast
@@ -740,7 +772,7 @@ export async function getSignalsForMarket(
     }
     // Weather markets: NWS forecast
     if (marketTitle && isWeatherTitle(marketTitle)) {
-      const wx = await nwsWeatherSignal()
+      const wx = await nwsWeatherSignal(marketTitle)
       if (wx) {
         return [{ label: 'NWS Weather Forecast', value: '', note: wx, source: 'National Weather Service' }]
       }

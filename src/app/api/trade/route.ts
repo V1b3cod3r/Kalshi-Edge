@@ -49,7 +49,11 @@ export async function POST(req: NextRequest) {
       price_cents,
     })
 
-    // Record position and deduct cost from bankroll
+    // Record position and deduct cost from bankroll. Re-read the session AFTER
+    // the network call: the pre-order read above is stale by now, and writing
+    // it back would overwrite any trade that completed while we awaited —
+    // losing that position record and its bankroll deduction.
+    const freshSession = getSession()
     const newPosition = {
       id: result.order_id,
       market: ticker,
@@ -60,9 +64,9 @@ export async function POST(req: NextRequest) {
       category: body.category || '',
       corr_group: body.corr_group || ticker.split('-')[0],
     }
-    session.positions.push(newPosition)
-    session.current_bankroll = Math.max(0, session.current_bankroll - totalCost)
-    saveSession(session)
+    freshSession.positions.push(newPosition)
+    freshSession.current_bankroll = Math.max(0, freshSession.current_bankroll - totalCost)
+    saveSession(freshSession)
 
     return NextResponse.json({
       order: result,

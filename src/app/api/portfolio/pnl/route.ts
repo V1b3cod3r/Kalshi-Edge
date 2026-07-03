@@ -100,6 +100,15 @@ export async function GET() {
       if (p.ticker) predByTicker.set(p.ticker, p)
     }
 
+    // Normalize a price field to dollars: Kalshi returns some price fields in
+    // cents — any value > 1 is treated as cents and divided by 100.
+    const normalizePrice = (v: any): number | null => {
+      if (v == null) return null
+      const n = Number(v)
+      if (!isFinite(n) || n < 0) return null
+      return n > 1 ? n / 100 : n
+    }
+
     // Normalize open positions
     const rawPositions: any[] = positionsData.market_positions ?? positionsData.positions ?? []
     const open_positions: OpenPosition[] = rawPositions.map((p: any) => {
@@ -108,7 +117,12 @@ export async function GET() {
       const avgPrice = p.total_traded != null && contracts > 0
         ? Math.abs(p.total_traded) / contracts / 100
         : 0
-      const currentPrice = p.market?.yes_ask_dollars ?? p.yes_ask ?? avgPrice
+      const yesPrice = normalizePrice(p.market?.yes_ask_dollars) ?? normalizePrice(p.yes_ask)
+      // NO positions are valued at (1 − yes price); fall back to avg price
+      // (already side-relative) when no live quote is available.
+      const currentPrice = yesPrice != null
+        ? (side === 'NO' ? 1 - yesPrice : yesPrice)
+        : avgPrice
       const currentValue = contracts * currentPrice
       const costBasis = contracts * avgPrice
       const unrealized = p.unrealized_pnl != null
@@ -152,11 +166,13 @@ export async function GET() {
       }
     })
 
-    // Compute summary stats from all settlements
+    // Compute summary stats from all settlements.
+    // $0 scratches are neither wins nor losses and are excluded from win rate.
     const wins = allSettlements.filter((s) => s.profit > 0).length
-    const losses = allSettlements.filter((s) => s.profit <= 0).length
+    const losses = allSettlements.filter((s) => s.profit < 0).length
     const total_settled = allSettlements.length
-    const win_rate = total_settled > 0 ? wins / total_settled : 0
+    const decided = wins + losses
+    const win_rate = decided > 0 ? wins / decided : 0
     const total_pnl = allSettlements.reduce((sum, s) => sum + s.profit, 0)
     const total_invested = allSettlements.reduce((sum, s) => sum + Math.max(s.cost, 0), 0)
     const total_returned = allSettlements.reduce((sum, s) => sum + s.revenue, 0)
@@ -188,7 +204,7 @@ export async function GET() {
       existing.pnl += s.profit
       existing.invested += Math.max(s.cost, 0)
       if (s.profit > 0) existing.wins++
-      else existing.losses++
+      else if (s.profit < 0) existing.losses++
       catMap.set(cat, existing)
     }
     const by_category: CategoryBreakdown[] = Array.from(catMap.entries())
@@ -214,7 +230,7 @@ export async function GET() {
       existing.pnl += s.profit
       existing.invested += Math.max(s.cost, 0)
       if (s.profit > 0) existing.wins++
-      else existing.losses++
+      else if (s.profit < 0) existing.losses++
       srcMap.set(src, existing)
     }
     const by_source: SourceBreakdown[] = Array.from(srcMap.entries())

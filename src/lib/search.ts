@@ -139,7 +139,10 @@ export async function searchTavily(
  */
 export async function searchPolymarket(marketTitle: string): Promise<string> {
   try {
-    const url = `https://gamma-api.polymarket.com/markets?search=${encodeURIComponent(marketTitle)}&limit=5`
+    // The gamma /markets endpoint has no `search` param — use public-search,
+    // which returns { events: [...] } with the matching markets nested inside
+    // each event.
+    const url = `https://gamma-api.polymarket.com/public-search?q=${encodeURIComponent(marketTitle)}`
     const res = await fetchWithTimeout(url, {
       headers: { 'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' },
     })
@@ -148,7 +151,10 @@ export async function searchPolymarket(marketTitle: string): Promise<string> {
     const data = await res.json().catch(() => null)
     if (!data) return ''
 
-    const markets: any[] = Array.isArray(data) ? data : (data.data ?? data.markets ?? [])
+    const events: any[] = Array.isArray(data.events) ? data.events : []
+    const markets: any[] = events.flatMap((e: any) =>
+      Array.isArray(e?.markets) ? e.markets : []
+    )
 
     // Stop words to ignore when computing title overlap
     const stopWords = new Set([

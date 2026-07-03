@@ -51,8 +51,8 @@ function parseAnalysis(markdown: string, title: string): ParsedAnalysis {
   const pMarketMatch = markdown.match(/Implied by market[:\s]+(\d+(?:\.\d+)?)%/i)
   if (pMarketMatch) result.pMarket = parseFloat(pMarketMatch[1])
 
-  // Parse edge
-  const edgeMatch = markdown.match(/\*\*Edge\*\*[:\s]+([+\-])(\d+(?:\.\d+)?)%\s+on\s+(YES|NO)/i)
+  // Parse edge — accept Unicode minus (−), which the prompt template itself uses
+  const edgeMatch = markdown.match(/\*\*Edge\*\*[:\s]+([+\-−])(\d+(?:\.\d+)?)%\s+on\s+(YES|NO)/i)
   if (edgeMatch) {
     result.edgeMagnitude = parseFloat(edgeMatch[2])
     result.edgeDirection = edgeMatch[3].toUpperCase() as 'YES' | 'NO'
@@ -66,8 +66,9 @@ function parseAnalysis(markdown: string, title: string): ParsedAnalysis {
     result.action = dir === 'NO BET' ? 'NO_BET' : 'BET'
   }
 
-  // Parse Kelly f*
-  const kellyMatch = markdown.match(/\*\*Kelly f\*\*[:\s]+(\d+(?:\.\d+)?)%/i)
+  // Parse Kelly f* — template emits `**Kelly f***:` (trailing asterisk after the
+  // bold marker), so tolerate any run of asterisks before the colon
+  const kellyMatch = markdown.match(/\*\*Kelly f\*{1,3}[:\s]+(\d+(?:\.\d+)?)%/i)
   if (kellyMatch) result.kellyFull = parseFloat(kellyMatch[1])
 
   // Parse recommended size
@@ -189,24 +190,9 @@ export default function AnalysisResult({
       if (!res.ok) throw new Error(data.error || 'Trade failed')
       setTradeResult(data)
       setTradeState('success')
-      // Auto-record prediction for calibration tracking
-      if (parsed.pBlended !== null || parsed.pData !== null) {
-        const predictedProb = (parsed.pBlended ?? parsed.pData ?? 50) / 100
-        const edge = parsed.edgeMagnitude ?? 0
-        fetch('/api/predictions', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            market_title: title,
-            ticker,
-            predicted_probability: predictedProb,
-            direction: tradeDirection,
-            market_price: pricePerContract,
-            edge_pct: edge,
-            source: 'analyze',
-          }),
-        }).catch(() => {/* silent */})
-      }
+      // No prediction POST here: the analyze route already logged this
+      // prediction server-side. A second client record double-counts the
+      // market in calibration (and stored the NO price in the P(YES) field).
     } catch (err: any) {
       setTradeError(err.message || 'Trade execution failed')
       setTradeState('error')

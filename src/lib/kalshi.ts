@@ -122,13 +122,16 @@ export async function fetchMarkets(
 }
 
 export async function fetchMarket(auth: KalshiAuth | null, ticker: string): Promise<any> {
-  const path = `${PATH_PREFIX}/markets/${ticker}`
+  // Encode the ticker in both the signed path and the fetch URL — they must
+  // stay identical for the request signature to validate.
+  const encodedTicker = encodeURIComponent(ticker)
+  const path = `${PATH_PREFIX}/markets/${encodedTicker}`
   const headers: Record<string, string> =
     auth?.keyId && auth?.privateKey
       ? getSignedHeaders(auth, 'GET', path)
       : { 'Content-Type': 'application/json' }
 
-  const res = await fetch(`${KALSHI_BASE_URL}/markets/${ticker}`, { headers })
+  const res = await fetch(`${KALSHI_BASE_URL}/markets/${encodedTicker}`, { headers })
 
   if (!res.ok) {
     const text = await res.text()

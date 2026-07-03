@@ -97,24 +97,9 @@ function OpportunityCard({ opp, bankroll }: { opp: Opportunity; bankroll: number
       if (!res.ok) throw new Error(data.error || 'Trade failed')
       setOrderId(data.order?.order_id)
       setTradeState('success')
-      // Auto-record prediction for calibration tracking
-      fetch('/api/predictions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          market_title: opp.title,
-          ticker: opp.ticker,
-          category: opp.ticker.startsWith('KXECON') ? 'Economics/Finance'
-            : opp.ticker.startsWith('KXPOL') ? 'Politics & Elections'
-            : 'Other/General',
-          predicted_probability: opp.my_estimate_pct / 100,
-          direction: opp.direction,
-          market_price: priceDecimal,
-          edge_pct: opp.edge_pct,
-          resolution_date: opp.resolution_date ?? undefined,
-          source: 'scanner',
-        }),
-      }).catch(() => {/* silent */})
+      // No prediction POST here: the scan route already logged one for this
+      // opportunity. A second client-side record double-counts the market in
+      // calibration stats (and stored the NO price in the P(YES) field).
     } catch (err: any) {
       setTradeError(err.message || 'Trade execution failed')
       setTradeState('error')
@@ -382,13 +367,20 @@ export default function ScannerPage() {
 
       const reader = res.body.getReader()
       const decoder = new TextDecoder()
+      // Buffer partial SSE frames: a `data: {...}` line can be split across
+      // network chunks (the final `done` event — the biggest payload — is the
+      // most likely to split). Only parse past complete `\n\n` frame breaks.
+      let buffer = ''
 
       while (true) {
         const { done, value } = await reader.read()
         if (done) break
-        const text = decoder.decode(value)
-        for (const line of text.split('\n')) {
-          if (!line.startsWith('data: ')) continue
+        buffer += decoder.decode(value, { stream: true })
+        const frames = buffer.split('\n\n')
+        buffer = frames.pop() ?? ''
+        for (const frame of frames) {
+          const line = frame.split('\n').find((l) => l.startsWith('data: '))
+          if (!line) continue
           let event: any
           try { event = JSON.parse(line.slice(6)) } catch { continue }
 

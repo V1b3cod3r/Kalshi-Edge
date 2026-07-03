@@ -317,6 +317,28 @@ function evaluateOpportunity(opp: ScanOpportunity, ctx: GuardrailContext): Decis
     return skip(`Execution price ${priceCents}¢ outside valid 1–99¢ range`)
   }
 
+  // --- Guardrails that are independent of trade size -------------------------
+  if (ctx.openTickers.has(opp.ticker)) {
+    return skip('Already holding a position in this ticker (no averaging)')
+  }
+  if (ctx.openPositionCount >= ap.max_open_positions) {
+    return skip(`Open positions (${ctx.openPositionCount}) at maximum of ${ap.max_open_positions}`)
+  }
+  const dailyRemaining = ap.max_daily_spend_usd - ctx.dailySpend
+  if (dailyRemaining <= 0) {
+    return skip(`Daily spend limit reached ($${ctx.dailySpend.toFixed(2)} of $${ap.max_daily_spend_usd.toFixed(2)})`)
+  }
+  const exposureRemaining = ap.max_exposure_usd - ctx.totalExposure
+  if (exposureRemaining <= 0) {
+    return skip(`Total exposure limit reached ($${ctx.totalExposure.toFixed(2)} of $${ap.max_exposure_usd.toFixed(2)})`)
+  }
+  const cluster = clusterForTicker(opp.ticker, opp.title)
+  const clusterCost = ctx.clusterExposure.get(cluster) ?? 0
+  const clusterRemaining = ap.max_per_cluster_usd - clusterCost
+  if (clusterRemaining <= 0) {
+    return skip(`Cluster "${cluster}" exposure limit reached ($${clusterCost.toFixed(2)} of $${ap.max_per_cluster_usd.toFixed(2)})`)
+  }
+
   // --- Kelly sizing (all dollars) ------------------------------------------
   // b = net odds = payout/stake for the chosen side; p = shrunk win probability.
   const b = (1 - price) / price
@@ -332,9 +354,9 @@ function evaluateOpportunity(opp: ScanOpportunity, ctx: GuardrailContext): Decis
   // guardrail's remaining headroom.
   const headroom = Math.min(
     ap.max_per_trade_usd,
-    ap.max_daily_spend_usd - ctx.dailySpend,
-    ap.max_exposure_usd - ctx.totalExposure,
-    ap.max_per_cluster_usd - (ctx.clusterExposure.get(clusterForTicker(opp.ticker, opp.title)) ?? 0),
+    dailyRemaining,
+    exposureRemaining,
+    clusterRemaining,
     ctx.balance
   )
   const kellyStake = Math.min(f * ctx.balance, headroom)
@@ -345,23 +367,17 @@ function evaluateOpportunity(opp: ScanOpportunity, ctx: GuardrailContext): Decis
   }
   const cost = contracts * price
 
-  // --- Guardrails (each violation logged explicitly) ------------------------
+  // --- Belt-and-braces re-checks with the final cost -------------------------
+  // The headroom clamp above should make these unreachable; they exist so a
+  // sizing bug can never translate into a limit-violating order.
   if (ctx.dailySpend + cost > ap.max_daily_spend_usd) {
     return skip(`Daily spend $${ctx.dailySpend.toFixed(2)} + $${cost.toFixed(2)} would exceed $${ap.max_daily_spend_usd.toFixed(2)} limit`)
-  }
-  if (ctx.openPositionCount >= ap.max_open_positions) {
-    return skip(`Open positions (${ctx.openPositionCount}) at maximum of ${ap.max_open_positions}`)
   }
   if (ctx.totalExposure + cost > ap.max_exposure_usd) {
     return skip(`Total exposure $${ctx.totalExposure.toFixed(2)} + $${cost.toFixed(2)} would exceed $${ap.max_exposure_usd.toFixed(2)} limit`)
   }
-  const cluster = clusterForTicker(opp.ticker, opp.title)
-  const clusterCost = ctx.clusterExposure.get(cluster) ?? 0
   if (clusterCost + cost > ap.max_per_cluster_usd) {
     return skip(`Cluster "${cluster}" exposure $${clusterCost.toFixed(2)} + $${cost.toFixed(2)} would exceed $${ap.max_per_cluster_usd.toFixed(2)} cap`)
-  }
-  if (ctx.openTickers.has(opp.ticker)) {
-    return skip('Already holding a position in this ticker (no averaging)')
   }
   if (cost > ctx.balance) {
     return skip(`Insufficient balance: cost $${cost.toFixed(2)} exceeds available $${ctx.balance.toFixed(2)}`)

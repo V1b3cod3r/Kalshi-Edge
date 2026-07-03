@@ -49,6 +49,11 @@ export async function PUT(req: NextRequest) {
         newSettings.kalshi_private_key = current.kalshi_private_key
       }
     }
+    if (body.autopilot !== undefined) {
+      // Deep-merge the autopilot block so a partial update (e.g. just toggling
+      // enabled) can never wipe the other guardrail fields.
+      newSettings.autopilot = { ...current.autopilot, ...body.autopilot }
+    }
 
     saveSettings(newSettings)
     return NextResponse.json({

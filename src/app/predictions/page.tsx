@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { Prediction } from '@/lib/types'
+import { Prediction, CalibrationStats } from '@/lib/types'
 
 type Filter = 'all' | 'pending' | 'resolved'
 
@@ -64,11 +64,18 @@ export default function PredictionsPage() {
   const [filter, setFilter] = useState<Filter>('all')
   const [resolvingId, setResolvingId] = useState<string | null>(null)
   const [autoResolveStatus, setAutoResolveStatus] = useState<string | null>(null)
+  const [calStats, setCalStats] = useState<CalibrationStats | null>(null)
 
   const loadPredictions = () =>
     fetch('/api/predictions')
       .then((r) => r.json())
       .then((d) => setPredictions(d.predictions || []))
+
+  const loadCalStats = () =>
+    fetch('/api/calibration')
+      .then((r) => r.json())
+      .then((d) => setCalStats(d.stats ?? null))
+      .catch(() => setCalStats(null))
 
   const runAutoResolve = async () => {
     setAutoResolveStatus('Checking Kalshi for resolved markets...')
@@ -77,6 +84,7 @@ export default function PredictionsPage() {
       const data = await res.json()
       if (data.resolved > 0) {
         await loadPredictions()
+        loadCalStats()
         const wins = data.newly_resolved.filter((r: any) => r.was_correct).length
         const losses = data.newly_resolved.filter((r: any) => !r.was_correct).length
         const parts = []
@@ -93,6 +101,7 @@ export default function PredictionsPage() {
 
   useEffect(() => {
     loadPredictions().finally(() => setLoading(false))
+    loadCalStats()
     // Auto-resolve on mount, then every 5 minutes
     runAutoResolve()
     const interval = setInterval(runAutoResolve, 5 * 60 * 1000)
@@ -110,6 +119,7 @@ export default function PredictionsPage() {
     const data = await res.json()
     if (res.ok) {
       setPredictions((prev) => prev.map((p) => (p.id === id ? data.prediction : p)))
+      loadCalStats()
     }
     setResolvingId(null)
   }
@@ -153,6 +163,84 @@ export default function PredictionsPage() {
           </div>
         )}
       </div>
+
+      {/* Claude vs Market — the one number that answers "does this thing work" */}
+      {calStats && (
+        <div
+          className="rounded-xl border p-6 mb-6"
+          style={{
+            backgroundColor: '#12121a',
+            borderColor:
+              calStats.resolved_predictions < 10
+                ? '#1e1e2e'
+                : calStats.market_brier != null && calStats.claude_brier < calStats.market_brier
+                ? '#22c55e40'
+                : '#ef444440',
+          }}
+        >
+          <div className="flex items-center justify-between flex-wrap gap-4">
+            <div>
+              <div className="text-xs font-medium uppercase tracking-wider mb-1" style={{ color: '#64748b' }}>
+                Claude vs. Market
+              </div>
+              <div
+                className="text-xl font-bold"
+                style={{
+                  color:
+                    calStats.resolved_predictions < 10
+                      ? '#94a3b8'
+                      : calStats.market_brier != null && calStats.claude_brier < calStats.market_brier
+                      ? '#22c55e'
+                      : '#ef4444',
+                }}
+              >
+                {calStats.resolved_predictions < 10
+                  ? `Not enough data yet (${calStats.resolved_predictions}/10 resolved needed)`
+                  : calStats.claude_vs_market}
+              </div>
+              <p className="text-xs mt-1" style={{ color: '#475569' }}>
+                Brier score on resolved predictions — lower is better. This is the honest test:
+                if Claude can&apos;t beat the market&apos;s own implied price, the edge isn&apos;t real yet.
+              </p>
+            </div>
+            <div className="flex gap-6">
+              <div className="text-center">
+                <div className="text-2xl font-bold" style={{ color: '#a5b4fc' }}>
+                  {calStats.claude_brier != null ? calStats.claude_brier.toFixed(3) : '—'}
+                </div>
+                <div className="text-xs" style={{ color: '#64748b' }}>Claude Brier</div>
+              </div>
+              <div className="text-center">
+                <div className="text-2xl font-bold" style={{ color: '#94a3b8' }}>
+                  {calStats.market_brier != null ? calStats.market_brier.toFixed(3) : '—'}
+                </div>
+                <div className="text-xs" style={{ color: '#64748b' }}>Market Brier</div>
+              </div>
+            </div>
+          </div>
+
+          {/* By source: does deep analysis beat shallow scanning? */}
+          {(calStats.by_source.scanner.count > 0 || calStats.by_source.analyze.count > 0) && (
+            <div className="flex gap-6 mt-4 pt-4 border-t" style={{ borderColor: '#1e1e2e' }}>
+              {(['scanner', 'analyze'] as const).map((src) => {
+                const s = calStats.by_source[src]
+                return (
+                  <div key={src} className="flex-1">
+                    <div className="text-xs uppercase tracking-wider mb-1" style={{ color: '#64748b' }}>
+                      {src === 'scanner' ? 'Scanner (shallow)' : 'Analyze (deep)'}
+                    </div>
+                    <div className="text-sm" style={{ color: '#94a3b8' }}>
+                      {s.count === 0
+                        ? 'No resolved predictions'
+                        : `${s.count} resolved · Brier ${s.brier?.toFixed(3) ?? '—'} · ${s.win_rate != null ? Math.round(s.win_rate * 100) + '% win rate' : '—'}`}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Stats bar */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">

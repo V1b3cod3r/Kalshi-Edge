@@ -1,0 +1,435 @@
+import { getViews, getSession, getSettings, getCalibrationStats, createPrediction, getRelevantLessons } from '@/lib/storage'
+import { buildScannerSystemPrompt, buildScannerUserMessage } from '@/lib/prompts'
+import { callClaude } from '@/lib/claude'
+import { fetchMarkets } from '@/lib/kalshi'
+import { MarketInput } from '@/lib/types'
+import { getSignalsForMarkets } from '@/lib/signals'
+import { getWebContextForMarkets } from '@/lib/search'
+import { z } from 'zod'
+
+// ---------------------------------------------------------------------------
+// Shared market-scan pipeline used by /api/auto-scan, /api/auto-scan/stream,
+// and the autopilot engine. Single source of truth for pagination, market
+// normalization, filtering, the Claude call, Zod parsing, and effective-edge
+// post-processing.
+// ---------------------------------------------------------------------------
+
+// Typed error so API routes can map failures to the exact status codes and
+// messages they returned before this logic was extracted.
+export class ScanError extends Error {
+  code: 'config' | 'no_markets' | 'parse'
+  constructor(code: 'config' | 'no_markets' | 'parse', message: string) {
+    super(message)
+    this.code = code
+    this.name = 'ScanError'
+  }
+}
+
+// Maps Kalshi category strings to our 4 standard categories
+export function mapCategory(kalshiCategory: string | undefined): string {
+  if (!kalshiCategory) return 'Other/General'
+  const c = kalshiCategory.toLowerCase()
+  if (c.includes('polit') || c.includes('elect') || c.includes('gov') || c.includes('president')) {
+    return 'Politics & Elections'
+  }
+  if (c.includes('econ') || c.includes('financ') || c.includes('fed') || c.includes('market') ||
+      c.includes('crypto') || c.includes('stock') || c.includes('rate') || c.includes('gdp') ||
+      c.includes('inflation') || c.includes('cpi')) {
+    return 'Economics/Finance'
+  }
+  if (c.includes('sport') || c.includes('nfl') || c.includes('nba') || c.includes('mlb') ||
+      c.includes('nhl') || c.includes('soccer') || c.includes('tennis') || c.includes('golf')) {
+    return 'Sports'
+  }
+  return 'Other/General'
+}
+
+// Normalize a Kalshi market object (whose shape can vary) into our MarketInput
+export function normalizeMarket(m: any): MarketInput | null {
+  // Skip MVE parlay bundles — user-created multi-leg combos with no real liquidity
+  if (m.mve_selected_legs || (m.ticker && String(m.ticker).includes('KXMVE'))) return null
+
+  // Title: try multiple field names
+  const title = m.title || m.question || m.subtitle || m.event_title
+  if (!title) return null
+
+  // Use ask prices for order placement — bidding at ask fills immediately.
+  // Midpoint would leave orders resting below the ask.
+  let yes_price: number | undefined
+  let no_price: number | undefined
+
+  // Helper: parse a price value that may be a string or number
+  const p = (v: any): number => (v == null ? 0 : Number(v))
+
+  const ya = p(m.yes_ask_dollars ?? m.yes_ask)
+  const yb = p(m.yes_bid_dollars ?? m.yes_bid)
+  const na = p(m.no_ask_dollars ?? m.no_ask)
+  const nb = p(m.no_bid_dollars ?? m.no_bid)
+  const last = p(m.last_price_dollars ?? m.last_price)
+
+  // YES ask (cost to buy YES)
+  if (ya > 0) {
+    yes_price = ya
+  } else if (yb > 0) {
+    yes_price = yb
+  } else if (na > 0) {
+    yes_price = 1 - na
+  } else if (nb > 0) {
+    yes_price = 1 - nb
+  } else if (last > 0) {
+    yes_price = last
+  }
+
+  // NO ask (cost to buy NO)
+  if (na > 0) {
+    no_price = na
+  } else if (nb > 0) {
+    no_price = nb
+  }
+
+  // Legacy cent-based prices (1–99): convert to decimal BEFORE deriving no_price
+  if (yes_price !== undefined && yes_price > 1) yes_price = yes_price / 100
+  if (no_price !== undefined && no_price > 1) no_price = no_price / 100
+
+  // Derive no_price from converted yes_price if not available directly
+  if (no_price === undefined && yes_price !== undefined) {
+    no_price = parseFloat((1 - yes_price).toFixed(4))
+  }
+
+  // No valid price found — drop the market
+  if (!yes_price || !no_price) return null
+
+  // Volume: always compute 24h dollar volume as contracts × midpoint price.
+  // Kalshi's raw volume_24h is contract count; their _fp fields are inconsistent.
+  // Computing ourselves gives a reliable dollar figure for filtering and display.
+  const contracts_24h = p(m.volume_24h) || 0
+  const mid = (yes_price + (1 - no_price)) / 2
+  const volume_24h = contracts_24h * mid
+
+  // Resolution date
+  const resolution_date = m.close_time || m.expiration_time || m.expected_expiration_ts || undefined
+
+  // Resolution criteria
+  const resolution_criteria =
+    m.rules_primary || m.settlement_source_description || m.subtitle || undefined
+
+  // Category
+  const category = mapCategory(m.category || m.event_category)
+
+  // Ticker as ID
+  const id = m.ticker || m.id || undefined
+
+  return {
+    id,
+    title: String(title),
+    yes_price,
+    no_price,
+    volume_24h: Number(volume_24h) || 0,
+    resolution_date: resolution_date ? String(resolution_date) : undefined,
+    resolution_criteria: resolution_criteria ? String(resolution_criteria) : undefined,
+    category,
+  }
+}
+
+const OpportunitySchema = z.object({
+  ticker: z.string(),
+  title: z.string(),
+  direction: z.enum(['YES', 'NO']),
+  my_estimate_pct: z.number().min(0).max(100),
+  market_price_pct: z.number().min(0).max(100),
+  edge_pct: z.number(),
+  score: z.number(),
+  rationale: z.string(),
+  key_risk: z.string().optional().default(''),
+  flags: z.array(z.string()),
+  confidence: z.enum(['LOW', 'MEDIUM', 'HIGH']),
+})
+
+const ScreenedOutSchema = z.object({
+  ticker: z.string(),
+  title: z.string(),
+  reason: z.string(),
+})
+
+const ScanResultSchema = z.object({
+  opportunities: z.array(OpportunitySchema),
+  screened_out: z.array(ScreenedOutSchema).default([]),
+  session_notes: z.string().optional().default(''),
+})
+
+// Shrinkage: 60% market / 40% Claude (conservative until calibration proves otherwise)
+export const SHRINK_MARKET = 0.60
+export const SHRINK_CLAUDE = 0.40
+// Kalshi fee coefficient: fee = 0.07 × P × (1−P) per contract
+export const KALSHI_FEE_COEF = 0.07
+// Default minimum effective edge after fees and shrinkage: 7pp
+export const MIN_EFFECTIVE_EDGE = 0.07
+
+export interface ScanProgressEvent {
+  phase: 'fetching' | 'filtering' | 'analyzing'
+  message: string
+  count: number
+}
+
+export interface ScanOpportunity {
+  ticker: string
+  title: string
+  direction: 'YES' | 'NO'
+  my_estimate_pct: number
+  market_price_pct: number
+  edge_pct: number           // effective edge (shrunk, fee-adjusted), percent
+  score: number
+  rationale: string
+  key_risk: string
+  flags: string[]
+  confidence: 'LOW' | 'MEDIUM' | 'HIGH'
+  yes_price: number | null
+  no_price: number | null
+  volume_24h: number | null
+  resolution_date: string | null
+  // Extra fields for programmatic consumers (autopilot). Additive — UI ignores.
+  category: string
+  p_shrunk: number           // shrunk P(YES), 0–1
+  execution_price: number | null // ask price for the chosen side, 0–1; null if market lookup failed
+}
+
+export interface RunScanParams {
+  category?: string
+  limit?: number
+  min_volume?: number
+  // Minimum effective edge (fraction, e.g. 0.07 = 7pp). Defaults to MIN_EFFECTIVE_EDGE.
+  min_effective_edge?: number
+  // Log opportunities to the calibration prediction store (default true, source 'scanner').
+  logPredictions?: boolean
+  onProgress?: (event: ScanProgressEvent) => void
+}
+
+export interface RunScanResult {
+  opportunities: ScanOpportunity[]
+  screened_out: { ticker: string; title: string; reason: string }[]
+  session_notes: string
+  markets_scanned: number
+}
+
+export async function runScan(params: RunScanParams = {}): Promise<RunScanResult> {
+  const {
+    category,
+    limit = 15,
+    min_volume = 0,
+    min_effective_edge = MIN_EFFECTIVE_EDGE,
+    logPredictions = true,
+    onProgress,
+  } = params
+
+  const progress = (event: ScanProgressEvent) => {
+    try {
+      onProgress?.(event)
+    } catch {
+      // progress reporting is never allowed to break the scan
+    }
+  }
+
+  const settings = getSettings()
+
+  if (!settings.kalshi_api_key) {
+    throw new ScanError('config', 'Kalshi API key not configured. Please add it in Settings.')
+  }
+  if (!settings.anthropic_api_key) {
+    throw new ScanError('config', 'Anthropic API key not configured. Please add it in Settings.')
+  }
+
+  // Step 1: Paginate through ALL open markets on Kalshi.
+  // status=open filters at the API level so closed/settled markets never enter
+  // the pool. Paginating the generic endpoint covers every series — a curated
+  // list goes stale as Kalshi adds new markets.
+  progress({ phase: 'fetching', message: 'Fetching open markets from Kalshi...', count: 0 })
+
+  const rawMarkets: any[] = []
+  const seenTickers = new Set<string>()
+  let cursor: string | null = null
+  const MAX_PAGES = 25 // ~5000 markets max; Kalshi usually has <1000 open at once
+
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const result: { markets: any[]; cursor: string | null } = await fetchMarkets(null, {
+      status: 'open',
+      limit: 200,
+      ...(cursor ? { cursor } : {}),
+    }).catch(() => ({ markets: [] as any[], cursor: null as string | null }))
+
+    for (const m of result.markets) {
+      const key = m.ticker || m.id
+      if (!key || seenTickers.has(key)) continue
+      // Skip MVE parlay bundles — user-created multi-leg combos with no liquidity
+      if (m.mve_selected_legs || String(m.ticker ?? '').includes('KXMVE')) continue
+      seenTickers.add(key)
+      rawMarkets.push(m)
+    }
+
+    cursor = result.cursor
+
+    // Progress update after each page (if we got markets)
+    if (rawMarkets.length > 0) {
+      const pageNum = page + 1
+      progress({
+        phase: 'fetching',
+        message: `Fetched ${rawMarkets.length} markets (page ${pageNum})...`,
+        count: rawMarkets.length,
+      })
+    }
+
+    if (!cursor) break
+  }
+
+  // Step 2: Normalize and filter
+  progress({
+    phase: 'filtering',
+    message: `Filtering to top ${limit} candidates...`,
+    count: rawMarkets.length,
+  })
+
+  const now = Date.now()
+  let normalized: MarketInput[] = rawMarkets
+    .map(normalizeMarket)
+    .filter((m): m is MarketInput => m !== null)
+    // Safety net: drop markets whose resolution date has passed, even if Kalshi
+    // still reports them as "open" (can happen during the settlement window).
+    .filter((m) => {
+      if (!m.resolution_date) return true
+      const ts = Date.parse(m.resolution_date)
+      return !Number.isFinite(ts) || ts > now
+    })
+    // Remove near-certain markets (no edge at extremes)
+    .filter((m) => m.yes_price >= 0.03 && m.yes_price <= 0.97)
+
+  // Apply category filter post-normalize — our mapCategory bucketing is more
+  // reliable than Kalshi's raw category strings.
+  if (category && category !== 'All') {
+    normalized = normalized.filter((m) => m.category === category)
+  }
+
+  normalized = normalized
+    // Apply min dollar volume filter (default 0 = allow any)
+    .filter((m) => (m.volume_24h ?? 0) >= min_volume)
+    // Sort by dollar volume descending (most liquid = most tradeable)
+    .sort((a, b) => (b.volume_24h ?? 0) - (a.volume_24h ?? 0))
+    // Take top N
+    .slice(0, limit)
+
+  if (normalized.length === 0) {
+    throw new ScanError('no_markets', 'No markets found matching your filters. Try loosening the filters.')
+  }
+
+  // Step 3: Fetch real-time signals + web context in parallel
+  progress({
+    phase: 'analyzing',
+    message: `Analyzing ${normalized.length} markets with Claude...`,
+    count: normalized.length,
+  })
+
+  const [signalMap, webContextMap] = await Promise.all([
+    getSignalsForMarkets(normalized),
+    getWebContextForMarkets(normalized, settings.tavily_api_key || undefined),
+  ])
+
+  // Step 4: Run Claude scanner with live signals + web context injected
+  const views = getViews()
+  const session = getSession()
+  const calibration = getCalibrationStats()
+
+  // Get lessons relevant to the category being scanned (or all categories if no filter)
+  const scanCategory = category && category !== 'All' ? category : 'Other/General'
+  const scanKeywords = category && category !== 'All' ? [category.toLowerCase()] : []
+  const relevantLessons = getRelevantLessons(scanCategory, scanKeywords, 5)
+
+  const systemPrompt = buildScannerSystemPrompt(calibration, relevantLessons)
+  const userMessage = buildScannerUserMessage(normalized, views, session, signalMap, webContextMap, calibration)
+
+  const rawResult = await callClaude(settings.anthropic_api_key, systemPrompt, userMessage)
+
+  // Parse Claude's JSON response — strip any accidental markdown fences
+  let scanResult: z.infer<typeof ScanResultSchema>
+  const cleaned = rawResult.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim()
+  try {
+    const parsed = JSON.parse(cleaned)
+    scanResult = ScanResultSchema.parse(parsed)
+  } catch {
+    throw new ScanError('parse', 'Claude returned an unexpected format. Please try again.')
+  }
+
+  // Build a ticker → market map for price lookup
+  const marketByTicker = new Map(normalized.map((m) => [m.id, m]))
+
+  // Recompute effective edge in code: shrink Claude's estimate toward market
+  // price, subtract Kalshi trading fee, filter weak signals.
+  const opportunities: ScanOpportunity[] = (scanResult.opportunities || [])
+    .map((opp): ScanOpportunity => {
+      const market = marketByTicker.get(opp.ticker)
+      const p_claude = (opp.my_estimate_pct ?? 50) / 100
+      const p_market = (opp.market_price_pct ?? 50) / 100
+      const p_shrunk = SHRINK_MARKET * p_market + SHRINK_CLAUDE * p_claude
+
+      // Use the correct execution price for each side
+      // YES buyer pays YES ask; NO buyer pays NO ask (= 1 - YES bid, but we only have ask)
+      const yes_ask = market?.yes_price ?? p_market
+      const no_ask = market?.no_price ?? (1 - p_market)
+      const execution_price = opp.direction === 'YES' ? yes_ask : no_ask
+
+      // Kalshi fee: 0.07 × P × (1−P) where P is execution price
+      const fee = KALSHI_FEE_COEF * execution_price * (1 - execution_price)
+
+      // Effective edge: shrunk estimate vs execution price, minus fee
+      const raw_edge = opp.direction === 'YES'
+        ? p_shrunk - execution_price
+        : (1 - p_shrunk) - execution_price
+      const effective_edge_pct = (raw_edge - fee) * 100
+
+      return {
+        ...opp,
+        edge_pct: parseFloat(effective_edge_pct.toFixed(2)),
+        yes_price: market?.yes_price ?? null,
+        no_price: market?.no_price ?? null,
+        volume_24h: market?.volume_24h ?? null,
+        resolution_date: market?.resolution_date ?? null,
+        category: market?.category ?? 'Other/General',
+        p_shrunk,
+        // Only report an execution price when we actually have market data —
+        // consumers placing orders must skip on null (fail-safe).
+        execution_price: market ? execution_price : null,
+      }
+    })
+    // Filter out opportunities that don't clear the effective edge threshold
+    .filter((opp) => opp.edge_pct >= min_effective_edge * 100)
+    // Re-sort by effective edge descending
+    .sort((a, b) => b.edge_pct - a.edge_pct)
+
+  // Auto-save scanner opportunities to calibration log (best-effort)
+  if (logPredictions) {
+    try {
+      for (const opp of opportunities) {
+        if (!opp.ticker || !opp.direction || (opp.direction as string) === 'NO BET') continue
+        const market = marketByTicker.get(opp.ticker)
+        if (!market) continue
+        createPrediction({
+          market_title: opp.title || market.title,
+          ticker: opp.ticker,
+          category: market.category ?? 'Other/General',
+          predicted_probability: (opp.my_estimate_pct ?? 50) / 100,
+          direction: opp.direction,
+          market_price: market.yes_price,
+          edge_pct: opp.edge_pct ?? 0,
+          resolution_date: market.resolution_date,
+          source: 'scanner',
+        })
+      }
+    } catch {
+      // prediction logging is non-critical
+    }
+  }
+
+  return {
+    opportunities,
+    screened_out: scanResult.screened_out || [],
+    session_notes: scanResult.session_notes || '',
+    markets_scanned: normalized.length,
+  }
+}

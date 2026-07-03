@@ -41,7 +41,7 @@ export interface Settlement {
   won: boolean
   settled_at: string
   category: string          // from predictions, or 'Other'
-  source: 'scanner' | 'analyze' | 'manual' | 'unknown'
+  source: 'scanner' | 'analyze' | 'manual' | 'autopilot' | 'unknown'
 }
 
 export interface CategoryBreakdown {

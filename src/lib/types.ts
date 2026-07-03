@@ -48,7 +48,7 @@ export interface Prediction {
   resolved_at?: string
   outcome?: 'YES' | 'NO'        // actual market outcome
   notes?: string
-  source: 'scanner' | 'analyze' | 'manual'
+  source: 'scanner' | 'analyze' | 'manual' | 'autopilot'
   lesson_id?: string             // set after lesson extracted for a wrong prediction
 }
 
@@ -69,6 +69,21 @@ export interface Lesson {
   created_at: string
 }
 
+export interface AutopilotSettings {
+  enabled: boolean                 // master switch, default false
+  dry_run: boolean                 // default true — log decisions, place NO orders
+  min_effective_edge_pct: number   // default 7
+  min_confidence: 'MEDIUM' | 'HIGH' // default 'HIGH'
+  max_per_trade_usd: number        // default 25
+  max_daily_spend_usd: number      // default 100
+  max_daily_loss_usd: number       // default 50 — halt if realized losses today exceed this
+  max_open_positions: number       // default 10
+  max_exposure_usd: number         // default 250 — total cost basis of open positions
+  kelly_fraction: number           // default 0.25 (quarter-Kelly)
+  category_blacklist: string[]     // default ['Sports']
+  max_per_cluster_usd: number      // default 50 — correlation cluster cap
+}
+
 export interface AppSettings {
   anthropic_api_key: string
   kalshi_api_key: string       // RSA key ID (UUID from Kalshi dashboard)
@@ -79,6 +94,35 @@ export interface AppSettings {
   max_corr_exposure_pct: number // default 0.15
   default_kelly_fraction: 'low' | 'medium' | 'high'
   use_extended_thinking: boolean // effort 'max' (true) vs 'high' (false) on claude-opus-4-7
+  autopilot: AutopilotSettings
+}
+
+// One trade decision (executed, dry-run, or skipped) within an autopilot cycle
+export interface AutopilotTrade {
+  ticker: string
+  title?: string
+  side: 'yes' | 'no'
+  contracts: number
+  price: number              // execution price in dollars (0–1)
+  cost: number               // contracts × price, dollars
+  effective_edge_pct: number
+  kelly_stake: number        // dollars, after fraction + clamps
+  executed: boolean
+  order_id?: string
+  skip_reason?: string
+}
+
+export interface AutopilotRun {
+  id: string
+  started_at: string
+  finished_at: string
+  status: 'ok' | 'disabled' | 'halted' | 'error'
+  dry_run: boolean
+  markets_scanned: number
+  opportunities_considered: number
+  trades: AutopilotTrade[]
+  halted?: string            // circuit-breaker / halt reason
+  error?: string
 }
 
 export interface CalibrationStats {

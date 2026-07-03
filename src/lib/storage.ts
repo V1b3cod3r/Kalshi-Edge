@@ -1,6 +1,6 @@
 import fs from 'fs'
 import path from 'path'
-import { MacroView, SessionState, AppSettings, Prediction, CalibrationStats, Lesson } from './types'
+import { MacroView, SessionState, AppSettings, AutopilotSettings, AutopilotRun, Prediction, CalibrationStats, Lesson } from './types'
 
 // Support DATA_DIR env var for cloud deployments (Railway mounts a volume here)
 const DATA_DIR = process.env.DATA_DIR ?? path.join(process.cwd(), 'data')
@@ -10,6 +10,7 @@ const SESSION_FILE = path.join(DATA_DIR, 'session.json')
 const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json')
 const PREDICTIONS_FILE = path.join(DATA_DIR, 'predictions.json')
 const LESSONS_FILE = path.join(DATA_DIR, 'lessons.json')
+const AUTOPILOT_LOG_FILE = path.join(DATA_DIR, 'autopilot_log.json')
 
 const DEFAULT_SESSION: SessionState = {
   current_bankroll: 10000,
@@ -22,6 +23,24 @@ const DEFAULT_SESSION: SessionState = {
   max_new_positions: 5,
 }
 
+// Conservative-by-default autopilot guardrails. Autopilot ships disabled AND
+// in dry-run mode — two independent switches must be flipped before any real
+// order can be placed.
+const DEFAULT_AUTOPILOT: AutopilotSettings = {
+  enabled: false,
+  dry_run: true,
+  min_effective_edge_pct: 7,
+  min_confidence: 'HIGH',
+  max_per_trade_usd: 25,
+  max_daily_spend_usd: 100,
+  max_daily_loss_usd: 50,
+  max_open_positions: 10,
+  max_exposure_usd: 250,
+  kelly_fraction: 0.25,
+  category_blacklist: ['Sports'],
+  max_per_cluster_usd: 50,
+}
+
 const DEFAULT_SETTINGS: AppSettings = {
   anthropic_api_key: '',
   kalshi_api_key: '',
@@ -32,6 +51,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   max_corr_exposure_pct: 0.15,
   default_kelly_fraction: 'medium',
   use_extended_thinking: false,
+  autopilot: DEFAULT_AUTOPILOT,
 }
 
 function ensureDataDir() {
@@ -355,10 +375,30 @@ export function getCalibrationStats(): CalibrationStats {
 // Settings
 export function getSettings(): AppSettings {
   const saved = readJson<Partial<AppSettings>>(SETTINGS_FILE, {})
-  // Merge with defaults so missing fields never produce NaN/undefined
-  return { ...DEFAULT_SETTINGS, ...saved }
+  // Merge with defaults so missing fields never produce NaN/undefined.
+  // Deep-merge the autopilot block: existing settings files may predate it
+  // entirely, or have it but be missing newer guardrail fields.
+  return {
+    ...DEFAULT_SETTINGS,
+    ...saved,
+    autopilot: { ...DEFAULT_AUTOPILOT, ...(saved.autopilot ?? {}) },
+  }
 }
 
 export function saveSettings(settings: AppSettings): void {
   writeJson(SETTINGS_FILE, settings)
+}
+
+// Autopilot run log — newest first
+export function getAutopilotRuns(limit?: number): AutopilotRun[] {
+  const runs = readJson<AutopilotRun[]>(AUTOPILOT_LOG_FILE, [])
+  return limit && limit > 0 ? runs.slice(0, limit) : runs
+}
+
+const MAX_AUTOPILOT_RUNS = 200
+
+export function appendAutopilotRun(run: AutopilotRun): void {
+  const runs = readJson<AutopilotRun[]>(AUTOPILOT_LOG_FILE, [])
+  runs.unshift(run) // newest first
+  writeJson(AUTOPILOT_LOG_FILE, runs.slice(0, MAX_AUTOPILOT_RUNS))
 }

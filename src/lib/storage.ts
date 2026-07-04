@@ -42,6 +42,9 @@ const DEFAULT_AUTOPILOT: AutopilotSettings = {
   kelly_fraction: 0.25,
   category_blacklist: ['Sports'],
   max_per_cluster_usd: 50,
+  exit_enabled: true,
+  take_profit_pct: 40,
+  stop_loss_pct: 50,
 }
 
 const DEFAULT_SETTINGS: AppSettings = {

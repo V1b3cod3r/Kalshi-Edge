@@ -82,6 +82,9 @@ export interface AutopilotSettings {
   kelly_fraction: number           // default 0.25 (quarter-Kelly)
   category_blacklist: string[]     // default ['Sports']
   max_per_cluster_usd: number      // default 50 — correlation cluster cap
+  exit_enabled: boolean            // default true — manage open positions each cycle
+  take_profit_pct: number          // default 40 — sell when position up >= this % of entry cost
+  stop_loss_pct: number            // default 50 — sell when position down >= this % of entry cost
 }
 
 export interface AppSettings {
@@ -110,6 +113,8 @@ export interface AutopilotTrade {
   executed: boolean
   order_id?: string
   skip_reason?: string
+  intent?: 'buy' | 'sell'    // default 'buy' when absent (back-compat)
+  exit_reason?: string       // 'take_profit' | 'stop_loss' human text, set on sells
 }
 
 export interface AutopilotRun {

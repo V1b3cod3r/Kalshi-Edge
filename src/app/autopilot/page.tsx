@@ -96,8 +96,20 @@ function Toggle({ on, onClick, color = '#6366f1' }: { on: boolean; onClick: () =
 
 function tradeRowColor(t: AutopilotTrade): { color: string; label: string } {
   if (t.skip_reason) return { color: '#64748b', label: 'SKIP' }
+  if (t.intent === 'sell') {
+    // Sells (exit management) read blue when executed, amber when dry-run.
+    return t.executed
+      ? { color: '#3b82f6', label: 'SELL' }
+      : { color: '#f59e0b', label: 'SELL (DRY)' }
+  }
   if (t.executed) return { color: '#22c55e', label: 'EXECUTED' }
   return { color: '#f59e0b', label: 'DRY RUN' }
+}
+
+function exitReasonLabel(reason: string | undefined): string {
+  if (reason === 'take_profit') return 'Take Profit'
+  if (reason === 'stop_loss') return 'Stop Loss'
+  return reason ?? ''
 }
 
 function RunRow({ run }: { run: AutopilotRun }) {
@@ -182,10 +194,20 @@ function RunRow({ run }: { run: AutopilotRun }) {
                 <tbody>
                   {run.trades.map((t, i) => {
                     const { color, label } = tradeRowColor(t)
+                    const isSell = t.intent === 'sell'
                     return (
                       <tr key={`${t.ticker}-${i}`} style={{ borderTop: '1px solid #1a1a28' }}>
                         <td className="px-3 py-2">
-                          <span className="font-bold" style={{ color }}>{label}</span>
+                          <span
+                            className="font-bold"
+                            style={
+                              isSell && !t.skip_reason
+                                ? { color, backgroundColor: `${color}18`, border: `1px solid ${color}40`, borderRadius: '4px', padding: '1px 6px' }
+                                : { color }
+                            }
+                          >
+                            {label}
+                          </span>
                         </td>
                         <td className="px-3 py-2 font-mono" style={{ color: t.skip_reason ? '#64748b' : '#f1f5f9' }}>
                           {t.ticker}
@@ -202,15 +224,19 @@ function RunRow({ run }: { run: AutopilotRun }) {
                         <td className="px-3 py-2 text-right" style={{ color: '#e2e8f0' }}>
                           {t.skip_reason ? '—' : `$${t.cost.toFixed(2)}`}
                         </td>
-                        <td className="px-3 py-2 text-right" style={{ color: t.effective_edge_pct >= 7 ? '#22c55e' : '#94a3b8' }}>
-                          {t.effective_edge_pct.toFixed(1)}%
+                        <td className="px-3 py-2 text-right" style={{ color: isSell ? '#3b82f6' : t.effective_edge_pct >= 7 ? '#22c55e' : '#94a3b8' }}>
+                          {isSell
+                            ? (t.exit_reason ? exitReasonLabel(t.exit_reason) : '—')
+                            : `${t.effective_edge_pct.toFixed(1)}%`}
                         </td>
                         <td className="px-3 py-2" style={{ color: '#64748b', maxWidth: '340px' }}>
                           {t.skip_reason
                             ? t.skip_reason
-                            : t.executed
-                              ? `Order ${t.order_id ?? ''} · Kelly stake $${t.kelly_stake.toFixed(2)}`
-                              : `Would place · Kelly stake $${t.kelly_stake.toFixed(2)}`}
+                            : isSell
+                              ? `${exitReasonLabel(t.exit_reason)} · ${t.executed ? `Sold ${t.contracts} @ $${t.price.toFixed(2)}${t.order_id ? ` · Order ${t.order_id}` : ''}` : `Would sell ${t.contracts} @ $${t.price.toFixed(2)}`}`
+                              : t.executed
+                                ? `Order ${t.order_id ?? ''} · Kelly stake $${t.kelly_stake.toFixed(2)}`
+                                : `Would place · Kelly stake $${t.kelly_stake.toFixed(2)}`}
                         </td>
                       </tr>
                     )
@@ -325,6 +351,9 @@ export default function AutopilotPage() {
       kelly_fraction: form.kelly_fraction,
       category_blacklist: form.category_blacklist,
       max_per_cluster_usd: form.max_per_cluster_usd,
+      exit_enabled: form.exit_enabled,
+      take_profit_pct: form.take_profit_pct,
+      stop_loss_pct: form.stop_loss_pct,
     })
     if (ok) showToast('Guardrails saved', 'success')
   }
@@ -615,6 +644,33 @@ export default function AutopilotPage() {
                 category_blacklist: e.target.value.split(',').map((s) => s.trim()).filter(Boolean),
               })}
               placeholder="Sports" style={inputStyle} />
+          </div>
+
+          {/* Exit management — LLM-free take-profit / stop-loss on open positions */}
+          <div className="col-span-2 md:col-span-3 mt-2 pt-4" style={{ borderTop: '1px solid #2a2a3e' }}>
+            <div className="flex items-center justify-between">
+              <div>
+                <label style={{ ...labelStyle, marginBottom: '2px' }}>Exit management</label>
+                <p className="text-xs" style={{ color: '#64748b' }}>
+                  Each cycle, sell open positions to lock profit or cut losses — pure price mechanics, no Claude call.
+                </p>
+              </div>
+              <Toggle
+                on={form.exit_enabled}
+                onClick={() => setForm({ ...form, exit_enabled: !form.exit_enabled })}
+                color="#3b82f6"
+              />
+            </div>
+          </div>
+          <div>
+            <label style={labelStyle}>Take profit at +%</label>
+            <input type="number" min={1} step={1} value={form.take_profit_pct}
+              onChange={(e) => setForm({ ...form, take_profit_pct: parseFloat(e.target.value) || 0 })} style={inputStyle} />
+          </div>
+          <div>
+            <label style={labelStyle}>Stop loss at −%</label>
+            <input type="number" min={1} step={1} value={form.stop_loss_pct}
+              onChange={(e) => setForm({ ...form, stop_loss_pct: parseFloat(e.target.value) || 0 })} style={inputStyle} />
           </div>
         </div>
         <button

@@ -154,6 +154,7 @@ export interface PlaceOrderRequest {
   side: 'yes' | 'no'
   count: number       // number of contracts (integer)
   price_cents: number // limit price in cents (1–99)
+  action?: 'buy' | 'sell' // default 'buy'; 'sell' closes a held position on the same side
   client_order_id?: string
 }
 
@@ -173,7 +174,7 @@ export async function placeOrder(
 ): Promise<PlaceOrderResult> {
   const urlPath = `${PATH_PREFIX}/portfolio/orders`
   const body: Record<string, any> = {
-    action: 'buy',
+    action: req.action ?? 'buy',
     type: 'limit',
     ticker: req.ticker,
     side: req.side,

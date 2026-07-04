@@ -6,12 +6,13 @@ import {
 } from '@/lib/storage'
 import {
   placeOrder,
+  fetchMarket,
   getPortfolioBalance,
   getPortfolioPositions,
   getPortfolioSettlements,
   KalshiAuth,
 } from '@/lib/kalshi'
-import { runScan, ScanOpportunity } from '@/lib/scan'
+import { runScan, ScanOpportunity, KALSHI_FEE_COEF } from '@/lib/scan'
 import { AutopilotRun, AutopilotTrade } from '@/lib/types'
 
 // ---------------------------------------------------------------------------
@@ -42,6 +43,17 @@ export function clusterForTicker(ticker: string, title?: string): string {
     if (keywords.some((k) => haystack.includes(k))) return cluster
   }
   return ticker.slice(0, 4).toUpperCase()
+}
+
+// Parse a BID price from a Kalshi market object into decimal dollars (what you
+// can SELL into immediately). Mirrors scan.ts's price-field fallback but for the
+// bid: prefer the *_dollars field; the plain field is integer cents in v2, so a
+// raw value ≥ 1 means cents → /100. Sub-1 plain values are legacy dollars.
+function bidPrice(dollarsV: any, centsV: any): number {
+  if (dollarsV != null && Number(dollarsV) > 0) return Number(dollarsV)
+  const c = centsV == null ? 0 : Number(centsV)
+  if (!c || c <= 0) return 0
+  return c >= 1 ? c / 100 : c
 }
 
 function utcDay(iso: string | undefined): string {
@@ -159,6 +171,122 @@ export async function runAutopilotCycle(): Promise<AutopilotReport> {
 
     // Daily spend so far (executed autopilot trades logged today)
     let dailySpend = getTodaySpend()
+
+    // EXIT PASS: manage open positions with pure price mechanics — no LLM, no
+    // Claude call, fully deterministic. Runs AFTER the circuit breaker but
+    // BEFORE the buy loop so any capital and position slots freed by a sell are
+    // available to new entries in the SAME cycle. Fail-safe: any uncertainty on
+    // a position → skip that position (log the reason), never sell blindly; and
+    // each position is wrapped so one bad quote can't abort the pass or the buy
+    // loop that follows.
+    if (ap.exit_enabled) {
+      for (const pos of openPositions) {
+        try {
+          const ticker = String(pos.ticker)
+          const count = Math.abs(Number(pos.position))
+          const isYes = Number(pos.position) > 0
+          const side: 'yes' | 'no' = isYes ? 'yes' : 'no'
+          const cost = positionCost(pos) // dollars, cost basis of this position
+          if (!(count > 0) || !(cost > 0)) continue // nothing to value or sell
+          const avgEntry = cost / count // dollars per contract
+
+          // Live quote is required to price the exit — no quote, no sell.
+          const market = await fetchMarket(auth, ticker).catch(() => null)
+          if (!market) {
+            report.trades.push({
+              ticker, title: ticker, side, intent: 'sell',
+              contracts: count, price: 0, cost: 0,
+              effective_edge_pct: 0, kelly_stake: 0, executed: false,
+              skip_reason: 'Could not fetch live quote',
+            })
+            continue
+          }
+
+          // To CLOSE a long you SELL the same side you hold, hitting its bid.
+          const yesBid = bidPrice(market.yes_bid_dollars, market.yes_bid)
+          const noBid = bidPrice(market.no_bid_dollars, market.no_bid)
+          const sellPrice = isYes ? yesBid : noBid
+          if (!Number.isFinite(sellPrice) || sellPrice <= 0 || sellPrice >= 1) {
+            report.trades.push({
+              ticker, title: ticker, side, intent: 'sell',
+              contracts: count, price: 0, cost: 0,
+              effective_edge_pct: 0, kelly_stake: 0, executed: false,
+              skip_reason: 'No live bid to sell into',
+            })
+            continue
+          }
+
+          // Gain relative to entry, and Kalshi's per-contract sell fee.
+          const gainFrac = (sellPrice - avgEntry) / avgEntry
+          const fee = KALSHI_FEE_COEF * sellPrice * (1 - sellPrice)
+          const netPerContract = sellPrice - fee
+
+          let exitReason: string | null = null
+          if (gainFrac >= ap.take_profit_pct / 100 && netPerContract > avgEntry) {
+            // Take profit — but only if still a gain net of the sell fee.
+            exitReason = 'take_profit'
+          } else if (gainFrac <= -ap.stop_loss_pct / 100) {
+            // Stop loss — thesis broken, cut it regardless of fee.
+            exitReason = 'stop_loss'
+          }
+
+          // HOLD: log nothing (only actions and skips-with-reasons are logged).
+          if (!exitReason) continue
+
+          const sellTrade: AutopilotTrade = {
+            ticker,
+            title: ticker,
+            side,
+            intent: 'sell',
+            contracts: count,
+            price: sellPrice,
+            cost: parseFloat((count * sellPrice).toFixed(2)),
+            effective_edge_pct: 0,
+            kelly_stake: 0,
+            exit_reason: exitReason,
+            executed: false,
+          }
+
+          if (ap.dry_run) {
+            report.trades.push({ ...sellTrade, executed: false })
+          } else {
+            const order = await placeOrder(auth, {
+              ticker,
+              side,
+              count,
+              price_cents: Math.round(sellPrice * 100),
+              action: 'sell',
+            })
+            report.trades.push({ ...sellTrade, executed: true, order_id: order.order_id })
+          }
+
+          // Free guardrail headroom and credit approximate proceeds so the buy
+          // loop sees a realistic post-sell cycle. On dry-run we mirror the same
+          // adjustment so the logged cycle reflects what a live cycle would do.
+          balance += count * netPerContract
+          openPositionCount = Math.max(0, openPositionCount - 1)
+          totalExposure = Math.max(0, totalExposure - cost)
+          const cluster = clusterForTicker(ticker)
+          clusterExposure.set(cluster, Math.max(0, (clusterExposure.get(cluster) ?? 0) - cost))
+          openTickers.delete(ticker)
+        } catch (err: any) {
+          // One bad position must never abort the exit pass or the buy loop.
+          report.trades.push({
+            ticker: String(pos.ticker),
+            title: String(pos.ticker),
+            side: Number(pos.position) > 0 ? 'yes' : 'no',
+            intent: 'sell',
+            contracts: Math.abs(Number(pos.position) || 0),
+            price: 0,
+            cost: 0,
+            effective_edge_pct: 0,
+            kelly_stake: 0,
+            executed: false,
+            skip_reason: `Exit check failed: ${err?.message || String(err)}`,
+          })
+        }
+      }
+    }
 
     // c. Run the shared market scan pipeline. Autopilot logs its own
     // predictions for executed trades, so suppress the scanner's logging.

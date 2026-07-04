@@ -25,20 +25,29 @@ export class ScanError extends Error {
   }
 }
 
-// Maps Kalshi category strings to our 4 standard categories
-export function mapCategory(kalshiCategory: string | undefined): string {
-  if (!kalshiCategory) return 'Other/General'
-  const c = kalshiCategory.toLowerCase()
-  if (c.includes('polit') || c.includes('elect') || c.includes('gov') || c.includes('president')) {
+// Maps a market to our 4 standard categories. Kalshi market objects often
+// ship WITHOUT a category field (category lives on the parent event), so
+// relying on it alone buckets everything as Other/General — and then any
+// category filter empties the entire scan. Fall back to ticker+title keywords.
+export function mapCategory(kalshiCategory: string | undefined, ticker?: string, title?: string): string {
+  const c = (kalshiCategory ?? '').toLowerCase()
+  const t = ` ${ticker ?? ''} ${title ?? ''} `.toLowerCase()
+  if (
+    /(polit|elect|gov|president)/.test(c) ||
+    /(trump|biden|harris|congress|senate|election|president|governor|shutdown|tariff|impeach|supreme court|white house)/.test(t)
+  ) {
     return 'Politics & Elections'
   }
-  if (c.includes('econ') || c.includes('financ') || c.includes('fed') || c.includes('market') ||
-      c.includes('crypto') || c.includes('stock') || c.includes('rate') || c.includes('gdp') ||
-      c.includes('inflation') || c.includes('cpi')) {
+  if (
+    /(econ|financ|fed|market|crypto|stock|rate|gdp|inflation|cpi)/.test(c) ||
+    /(fomc|fed |cpi|inflation|gdp|jobless|unemployment|payroll|mortgage|s&p|nasdaq|dow jones|bitcoin|btc|ethereum|solana|crypto|treasury|recession|interest rate|price of)/.test(t)
+  ) {
     return 'Economics/Finance'
   }
-  if (c.includes('sport') || c.includes('nfl') || c.includes('nba') || c.includes('mlb') ||
-      c.includes('nhl') || c.includes('soccer') || c.includes('tennis') || c.includes('golf')) {
+  if (
+    /(sport|nfl|nba|mlb|nhl|soccer|tennis|golf)/.test(c) ||
+    /(nfl|nba|mlb|nhl|ncaa|ufc|premier league|world cup|super bowl|stanley cup|world series|grand slam|f1 |nascar)/.test(t)
+  ) {
     return 'Sports'
   }
   return 'Other/General'
@@ -98,7 +107,7 @@ export function normalizeMarket(m: any): MarketInput | null {
     m.rules_primary || m.settlement_source_description || m.subtitle || undefined
 
   // Category
-  const category = mapCategory(m.category || m.event_category)
+  const category = mapCategory(m.category || m.event_category, m.ticker, String(title))
 
   // Ticker as ID
   const id = m.ticker || m.id || undefined
@@ -235,6 +244,7 @@ export async function runScan(params: RunScanParams = {}): Promise<RunScanResult
   const rawMarkets: any[] = []
   const seenTickers = new Set<string>()
   let cursor: string | null = null
+  let lastFetchError: string | null = null
   const MAX_PAGES = 25 // ~5000 markets max; Kalshi usually has <1000 open at once
 
   for (let page = 0; page < MAX_PAGES; page++) {
@@ -242,7 +252,12 @@ export async function runScan(params: RunScanParams = {}): Promise<RunScanResult
       status: 'open',
       limit: 200,
       ...(cursor ? { cursor } : {}),
-    }).catch(() => ({ markets: [] as any[], cursor: null as string | null }))
+    }).catch((err) => {
+      // Record the failure instead of swallowing it — an all-pages failure
+      // must be reported as a fetch problem, not "no markets matched".
+      lastFetchError = err?.message || String(err)
+      return { markets: [] as any[], cursor: null as string | null }
+    })
 
     for (const m of result.markets) {
       const key = m.ticker || m.id
@@ -275,36 +290,52 @@ export async function runScan(params: RunScanParams = {}): Promise<RunScanResult
     count: rawMarkets.length,
   })
 
+  if (rawMarkets.length === 0) {
+    throw new ScanError(
+      'no_markets',
+      lastFetchError
+        ? `Kalshi returned no markets — the fetch itself failed: ${lastFetchError}`
+        : 'Kalshi returned zero open markets. This usually means the API is degraded or unreachable.'
+    )
+  }
+
+  // Track the funnel stage-by-stage so an empty result names its culprit
+  // instead of a generic "no markets found".
   const now = Date.now()
-  let normalized: MarketInput[] = rawMarkets
+  const quoted: MarketInput[] = rawMarkets
     .map(normalizeMarket)
     .filter((m): m is MarketInput => m !== null)
-    // Safety net: drop markets whose resolution date has passed, even if Kalshi
-    // still reports them as "open" (can happen during the settlement window).
-    .filter((m) => {
-      if (!m.resolution_date) return true
-      const ts = Date.parse(m.resolution_date)
-      return !Number.isFinite(ts) || ts > now
-    })
-    // Remove near-certain markets (no edge at extremes)
-    .filter((m) => m.yes_price >= 0.03 && m.yes_price <= 0.97)
+
+  const unexpired = quoted.filter((m) => {
+    if (!m.resolution_date) return true
+    const ts = Date.parse(m.resolution_date)
+    return !Number.isFinite(ts) || ts > now
+  })
+
+  // Remove near-certain markets (no edge at extremes)
+  const midRange = unexpired.filter((m) => m.yes_price >= 0.03 && m.yes_price <= 0.97)
 
   // Apply category filter post-normalize — our mapCategory bucketing is more
   // reliable than Kalshi's raw category strings.
-  if (category && category !== 'All') {
-    normalized = normalized.filter((m) => m.category === category)
-  }
+  const inCategory =
+    category && category !== 'All' ? midRange.filter((m) => m.category === category) : midRange
 
-  normalized = normalized
-    // Apply min dollar volume filter (default 0 = allow any)
-    .filter((m) => (m.volume_24h ?? 0) >= min_volume)
+  // Apply min dollar volume filter (default 0 = allow any)
+  const aboveVolume = inCategory.filter((m) => (m.volume_24h ?? 0) >= min_volume)
+
+  const normalized = aboveVolume
     // Sort by dollar volume descending (most liquid = most tradeable)
     .sort((a, b) => (b.volume_24h ?? 0) - (a.volume_24h ?? 0))
     // Take top N
     .slice(0, limit)
 
   if (normalized.length === 0) {
-    throw new ScanError('no_markets', 'No markets found matching your filters. Try loosening the filters.')
+    const funnel =
+      `${rawMarkets.length} fetched → ${quoted.length} with live two-sided quotes → ` +
+      `${unexpired.length} unexpired → ${midRange.length} priced 3–97¢` +
+      (category && category !== 'All' ? ` → ${inCategory.length} in "${category}"` : '') +
+      ` → ${aboveVolume.length} above $${min_volume} 24h volume`
+    throw new ScanError('no_markets', `No markets survived filtering. Funnel: ${funnel}.`)
   }
 
   // Step 3: Fetch real-time signals + web context in parallel

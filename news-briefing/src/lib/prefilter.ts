@@ -11,7 +11,11 @@ function tokenize(s: string): string[] {
     .toLowerCase()
     .replace(/[^a-z0-9\s-]/g, " ")
     .split(/\s+/)
-    .filter((w) => w.length > 2 && !STOPWORDS.has(w));
+    // Length >= 2 keeps short-but-meaningful tokens like "ai", "us", "eu"
+    // that the previous >2 filter dropped entirely. Word-boundary matching
+    // (see hits()) prevents the false positives that would otherwise come
+    // from substring-matching short tokens against words like "Ukraine".
+    .filter((w) => w.length >= 2 && !STOPWORDS.has(w));
 }
 
 interface InterestTerms {
@@ -21,6 +25,17 @@ interface InterestTerms {
 
 function expand(interests: string[]): InterestTerms[] {
   return interests.map((raw) => ({ raw, tokens: tokenize(raw) }));
+}
+
+function hits(haystackWords: Set<string>, tokens: string[]): number {
+  let n = 0;
+  for (const t of tokens) {
+    if (haystackWords.has(t)) n++;
+    // Cheap morphology: if interest says "rate", match "rates" / "rated".
+    // Skip on already-short tokens so "ai" doesn't try "ais"/"aid".
+    else if (t.length >= 4 && (haystackWords.has(`${t}s`) || haystackWords.has(`${t}d`))) n++;
+  }
+  return n;
 }
 
 export function prefilter(
@@ -35,14 +50,19 @@ export function prefilter(
   }
   const terms = expand(interests);
   const scored = articles.map((a) => {
-    const haystack = `${a.title} ${a.excerpt}`.toLowerCase();
+    const haystackWords = new Set(
+      `${a.title} ${a.excerpt}`
+        .toLowerCase()
+        .replace(/[^a-z0-9\s-]/g, " ")
+        .split(/\s+/)
+        .filter(Boolean),
+    );
     let best = 0;
     let bestInterest: string | null = null;
     for (const t of terms) {
-      let hits = 0;
-      for (const tok of t.tokens) if (haystack.includes(tok)) hits++;
-      if (hits > best) {
-        best = hits;
+      const n = hits(haystackWords, t.tokens);
+      if (n > best) {
+        best = n;
         bestInterest = t.raw;
       }
     }

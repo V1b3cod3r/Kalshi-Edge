@@ -1,5 +1,6 @@
 import { fetchAllArticles } from "./rss";
 import { prefilter } from "./prefilter";
+import { SOURCES } from "./sources";
 import {
   scoreRelevance,
   clusterArticles,
@@ -12,6 +13,7 @@ import type {
   Briefing,
   RelatedArticle,
   ScoredArticle,
+  SourceId,
   SummarizedArticle,
 } from "./types";
 
@@ -24,25 +26,35 @@ const CURATED_N = 12;
 const TOP_STORIES_N = 5;
 const TOP_STORIES_MIN_CLUSTER_SIZE = 2;
 
+// Sources that publish less than daily (Economist, Fed speeches). A 3-day-old
+// Economist piece isn't "stale" the way a 3-day-old wire story is — it's
+// still that week's coverage — so these are exempt from the "old news" dock
+// below (though they still get the positive boost for genuinely fresh items).
+const SLOW_CADENCE_SOURCES = new Set<SourceId>(
+  SOURCES.filter((f) => f.recencyHours > 24).map((f) => f.id),
+);
+
 /**
  * Adjustment to the LLM relevance score based on how recent the article is.
  * Lets a 2h-old article with score 6 outrank a 14h-old article with score 8,
  * which matches the user's mental model of "today's news".
  */
-function recencyAdjustment(publishedAt: string): number {
+export function recencyAdjustment(publishedAt: string, source: SourceId): number {
+  const stale = SLOW_CADENCE_SOURCES.has(source) ? 0 : -1;
   const t = Date.parse(publishedAt);
-  if (!Number.isFinite(t)) return -1;
+  if (!Number.isFinite(t)) return stale;
   const hours = (Date.now() - t) / 3_600_000;
   if (hours < 3) return 2;
   if (hours < 9) return 1;
   if (hours < 15) return 0;
-  return -1;
+  return stale;
 }
 
 export interface BriefingOptions {
-  scoringModel?: string;
   summaryModel?: string;
   forceFresh?: boolean;
+  /** Source ids to fetch. Omit to fetch all configured sources. */
+  enabledSources?: SourceId[];
 }
 
 interface ClusterCard {
@@ -80,23 +92,26 @@ export async function buildBriefing(
   interests: string[],
   options: BriefingOptions = {},
 ): Promise<Briefing> {
-  const scoringModel = options.scoringModel || SCORING_MODEL;
+  // Scoring and clustering are both internal ranking calls — the user never
+  // reads their output directly — so they always run on Haiku regardless of
+  // the summary model choice. This is also what keeps the app inside
+  // Vercel's 60s function budget even when the user picks Sonnet/Opus for
+  // summaries.
   const summaryModel = options.summaryModel || SUMMARY_MODEL;
 
-  const all = await fetchAllArticles(options.forceFresh);
+  const enabledSet = options.enabledSources ? new Set(options.enabledSources) : undefined;
+  const { articles: all, downSources } = await fetchAllArticles(options.forceFresh, enabledSet);
   const candidates = prefilter(all, interests, PREFILTER_POOL);
 
   // Scoring and clustering operate on the same prefilter pool and don't
-  // depend on each other (scoring measures interest match, clustering
-  // groups by topic similarity). Run them in parallel to roughly halve
-  // pre-summary wall time on slower models.
+  // depend on each other. Run in parallel.
   const rawCandidates = candidates.map((c) => c.article).slice(0, CLUSTER_POOL);
   const [
     { articles: scored, usage: scoringUsage },
     { clusters, usage: clusteringUsage },
   ] = await Promise.all([
-    scoreRelevance(candidates, interests, scoringModel),
-    clusterArticles(rawCandidates, scoringModel),
+    scoreRelevance(candidates, interests, SCORING_MODEL),
+    clusterArticles(rawCandidates, SCORING_MODEL),
   ]);
 
   // Apply the recency adjustment so newer articles bubble up among
@@ -106,7 +121,7 @@ export async function buildBriefing(
     .slice(0, CLUSTER_POOL)
     .map((a) => ({
       ...a,
-      score: a.score + recencyAdjustment(a.publishedAt),
+      score: a.score + recencyAdjustment(a.publishedAt, a.source),
     }));
 
   const allCards = clusters
@@ -140,8 +155,8 @@ export async function buildBriefing(
     assemble(c, summaries.get(curatedCards.length + i)),
   );
 
-  const scoringCost = costFor(scoringModel, scoringUsage);
-  const clusteringCost = costFor(scoringModel, clusteringUsage);
+  const scoringCost = costFor(SCORING_MODEL, scoringUsage);
+  const clusteringCost = costFor(SCORING_MODEL, clusteringUsage);
   const summaryCost = costFor(summaryModel, summaryUsage);
 
   return {
@@ -150,6 +165,7 @@ export async function buildBriefing(
     interests,
     articles,
     topStories,
+    downSources,
     cost: {
       scoring: scoringCost,
       clustering: clusteringCost,
@@ -158,7 +174,7 @@ export async function buildBriefing(
       scoringUsage,
       clusteringUsage,
       summaryUsage,
-      scoringModel,
+      scoringModel: SCORING_MODEL,
       summaryModel,
     },
   };

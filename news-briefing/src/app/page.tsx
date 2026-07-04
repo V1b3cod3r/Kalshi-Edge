@@ -8,6 +8,7 @@ import { ArticleSkeleton } from "@/components/Skeleton";
 import { SortToggle } from "@/components/SortToggle";
 import { loadInterests } from "@/lib/interests";
 import { loadModels } from "@/lib/models";
+import { loadEnabledSources } from "@/lib/source-prefs";
 import { DEFAULT_SORT, loadSort, saveSort, type SortMode } from "@/lib/sort-pref";
 import { loadReadSet, markRead } from "@/lib/read-tracker";
 import type { Briefing, SummarizedArticle } from "@/lib/types";
@@ -60,12 +61,13 @@ export default function BriefingPage() {
     }
     setEmpty(false);
     const models = loadModels();
+    const sources = loadEnabledSources();
     const requestedAt = Date.now();
     try {
       const res = await fetch("/api/briefing", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ interests, refresh: force, models }),
+        body: JSON.stringify({ interests, refresh: force, models, sources }),
       });
       if (!res.ok) throw new Error(await res.text());
       const data: Briefing = await res.json();
@@ -133,6 +135,13 @@ export default function BriefingPage() {
         refreshing={refreshing}
       />
       <div className="container-narrow">
+        {briefing && briefing.downSources.length > 0 && (
+          <div className="mb-4 rounded-xl bg-[#fff8e5] border border-[#f0dca3] px-4 py-3 text-[13px] text-[#8a6d1a]">
+            {briefing.downSources.map((s) => s.sourceName).join(", ")}{" "}
+            {briefing.downSources.length === 1 ? "is" : "are"} down right now —
+            today&apos;s briefing may be missing some coverage.
+          </div>
+        )}
         {empty ? (
           <div className="rounded-2xl bg-surface shadow-card p-8 text-center">
             <p className="text-[15px] text-ink-soft">

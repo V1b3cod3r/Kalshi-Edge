@@ -4,6 +4,10 @@ import { getSignalsForMarket, formatSignals } from '@/lib/signals'
 import { getMarketWebContext, formatWebContext } from '@/lib/search'
 import { getCalendarSignals } from '@/lib/calendar'
 
+// GET handlers without dynamic APIs can be statically cached at build time in
+// Next 14 — force runtime evaluation so responses always reflect current data.
+export const dynamic = 'force-dynamic'
+
 const KALSHI_BASE_URL = 'https://api.elections.kalshi.com/trade-api/v2'
 
 async function kalshiGet(apiKey: string, path: string, params?: Record<string, string>) {

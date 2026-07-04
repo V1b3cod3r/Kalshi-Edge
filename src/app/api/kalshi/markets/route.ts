@@ -2,6 +2,10 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getSettings } from '@/lib/storage'
 import { fetchMarkets } from '@/lib/kalshi'
 
+// GET handlers without dynamic APIs can be statically cached at build time in
+// Next 14 — force runtime evaluation so responses always reflect current data.
+export const dynamic = 'force-dynamic'
+
 export async function GET(req: NextRequest) {
   try {
     const settings = getSettings()

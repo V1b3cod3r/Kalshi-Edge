@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getViews, createView } from '@/lib/storage'
 
+// GET handlers without dynamic APIs can be statically cached at build time in
+// Next 14 — force runtime evaluation so responses always reflect current data.
+export const dynamic = 'force-dynamic'
+
 export async function GET() {
   try {
     const views = getViews()

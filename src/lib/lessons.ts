@@ -35,10 +35,10 @@ Output this JSON object:
 }`
 
     const message = await client.messages.create({
-      model: 'claude-opus-4-7',
+      model: 'claude-opus-4-8',
       max_tokens: 1024,
       // Adaptive thinking at low effort — simple structured extraction doesn't need
-      // deep reasoning, but 4.7 requires adaptive (budget_tokens removed).
+      // deep reasoning, but 4.7+ requires adaptive (budget_tokens removed).
       thinking: { type: 'adaptive' } as any,
       output_config: { effort: 'low' } as any,
       // Cache the stable system prompt to avoid re-tokenizing on every loss.

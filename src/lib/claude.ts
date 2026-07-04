@@ -24,9 +24,12 @@ export async function callClaude(
   // Streaming prevents HTTP timeouts on long analysis/scanner responses.
   // finalMessage() collects the complete response including thinking blocks.
   const stream = client.messages.stream({
-    model: 'claude-opus-4-7',
-    max_tokens: 16000,
-    // Adaptive thinking: Opus 4.7 only supports adaptive (not enabled+budget_tokens).
+    model: 'claude-opus-4-8',
+    // At xhigh/max effort, adaptive thinking can consume most of the output
+    // budget — 16K would truncate the analysis mid-answer. Streaming makes the
+    // larger ceiling safe (no HTTP timeout risk).
+    max_tokens: effort === 'xhigh' || effort === 'max' ? 64000 : 16000,
+    // Adaptive thinking: Opus 4.7+ only supports adaptive (not enabled+budget_tokens).
     // Claude decides when and how much to think based on task complexity.
     thinking: { type: 'adaptive' } as any,
     output_config: { effort } as any,
@@ -65,8 +68,8 @@ export async function callClaudeStream(
   const { effort = 'high', onThinking, onText } = options
 
   const stream = await client.messages.stream({
-    model: 'claude-opus-4-7',
-    max_tokens: 16000,
+    model: 'claude-opus-4-8',
+    max_tokens: effort === 'xhigh' || effort === 'max' ? 64000 : 16000,
     // 'summarized' display shows the user a condensed view of Claude's reasoning
     thinking: { type: 'adaptive', display: 'summarized' } as any,
     output_config: { effort } as any,

@@ -75,7 +75,9 @@ describe('callClaude', () => {
     expect(callArgs.model).toBe('claude-opus-4-8')
   })
 
-  it('uses max_tokens 16000 with adaptive thinking at default effort', async () => {
+  it('uses max_tokens 32000 with adaptive thinking at default effort', async () => {
+    // 32K (not 16K) so adaptive thinking on a large scan can't consume the
+    // whole budget before the JSON answer — the "unexpected response" bug.
     mockStream.mockResolvedValue({
       content: [{ type: 'text', text: 'ok' }],
     })
@@ -84,7 +86,7 @@ describe('callClaude', () => {
     await callClaude('sk-key', 'sys', 'msg')
 
     const callArgs = mockStream.mock.calls[0][0]
-    expect(callArgs.max_tokens).toBe(16000)
+    expect(callArgs.max_tokens).toBe(32000)
     expect(callArgs.thinking).toEqual({ type: 'adaptive' })
   })
 

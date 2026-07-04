@@ -246,41 +246,70 @@ export async function runScan(params: RunScanParams = {}): Promise<RunScanResult
   let cursor: string | null = null
   let lastFetchError: string | null = null
   const MAX_PAGES = 25 // ~5000 markets max; Kalshi usually has <1000 open at once
+  // min_close_ts excludes settled/expired markets by time, independent of the
+  // status param — the reliable backstop when status filtering misbehaves.
+  const minCloseTs = Math.floor(Date.now() / 1000)
 
-  for (let page = 0; page < MAX_PAGES; page++) {
-    const result: { markets: any[]; cursor: string | null } = await fetchMarkets(null, {
-      status: 'open',
+  // Kalshi's GetMarkets status filter is inconsistent: some deployments accept
+  // 'open', others 'active', and a wrong value returns an empty 200 rather
+  // than an error. Probe candidates on the first page and lock in whichever
+  // one actually returns markets; unfiltered is the last resort (runtime
+  // filters below still exclude closed/expired markets).
+  let statusParam: string | undefined
+  let firstPage: { markets: any[]; cursor: string | null } | null = null
+  for (const candidate of ['open', 'active', undefined]) {
+    const res = await fetchMarkets(null, {
+      ...(candidate ? { status: candidate } : {}),
+      min_close_ts: minCloseTs,
       limit: 200,
-      ...(cursor ? { cursor } : {}),
     }).catch((err) => {
-      // Record the failure instead of swallowing it — an all-pages failure
-      // must be reported as a fetch problem, not "no markets matched".
+      // Record the failure instead of swallowing it — an all-candidates
+      // failure must be reported as a fetch problem, not "no markets matched".
       lastFetchError = err?.message || String(err)
-      return { markets: [] as any[], cursor: null as string | null }
+      return null
     })
-
-    for (const m of result.markets) {
-      const key = m.ticker || m.id
-      if (!key || seenTickers.has(key)) continue
-      // Skip MVE parlay bundles — user-created multi-leg combos with no liquidity
-      if (m.mve_selected_legs || String(m.ticker ?? '').includes('KXMVE')) continue
-      seenTickers.add(key)
-      rawMarkets.push(m)
+    if (res && res.markets.length > 0) {
+      statusParam = candidate
+      firstPage = res
+      break
     }
+  }
 
-    cursor = result.cursor
+  if (firstPage) {
+    let result = firstPage
+    for (let page = 0; page < MAX_PAGES; page++) {
+      for (const m of result.markets) {
+        const key = m.ticker || m.id
+        if (!key || seenTickers.has(key)) continue
+        // Skip MVE parlay bundles — user-created multi-leg combos with no liquidity
+        if (m.mve_selected_legs || String(m.ticker ?? '').includes('KXMVE')) continue
+        seenTickers.add(key)
+        rawMarkets.push(m)
+      }
 
-    // Progress update after each page (if we got markets)
-    if (rawMarkets.length > 0) {
-      const pageNum = page + 1
-      progress({
-        phase: 'fetching',
-        message: `Fetched ${rawMarkets.length} markets (page ${pageNum})...`,
-        count: rawMarkets.length,
+      cursor = result.cursor
+
+      // Progress update after each page (if we got markets)
+      if (rawMarkets.length > 0) {
+        progress({
+          phase: 'fetching',
+          message: `Fetched ${rawMarkets.length} markets (page ${page + 1})...`,
+          count: rawMarkets.length,
+        })
+      }
+
+      if (!cursor) break
+      const next = await fetchMarkets(null, {
+        ...(statusParam ? { status: statusParam } : {}),
+        min_close_ts: minCloseTs,
+        limit: 200,
+        cursor,
+      }).catch((err) => {
+        lastFetchError = err?.message || String(err)
+        return { markets: [] as any[], cursor: null as string | null }
       })
+      result = next
     }
-
-    if (!cursor) break
   }
 
   // Step 2: Normalize and filter
@@ -295,7 +324,7 @@ export async function runScan(params: RunScanParams = {}): Promise<RunScanResult
       'no_markets',
       lastFetchError
         ? `Kalshi returned no markets — the fetch itself failed: ${lastFetchError}`
-        : 'Kalshi returned zero open markets. This usually means the API is degraded or unreachable.'
+        : 'Kalshi returned zero markets for every status filter (open/active/unfiltered), all with close times in the future. The API is likely degraded — try again in a few minutes.'
     )
   }
 

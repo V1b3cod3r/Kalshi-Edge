@@ -79,9 +79,15 @@ interface FetchMarketsParams {
   cursor?: string
   event_ticker?: string
   series_ticker?: string
-  status?: 'open' | 'closed' | 'settled'
+  // Kalshi is inconsistent about accepted values ('open' vs 'active'), so
+  // callers may need to probe — keep this a plain string.
+  status?: string
   category?: string
   search?: string
+  // Only markets whose close_time is at/after this Unix timestamp (seconds).
+  // The reliable way to exclude settled/expired markets regardless of the
+  // status param's mood.
+  min_close_ts?: number
 }
 
 // Market read endpoints are public — no auth required.
@@ -100,6 +106,7 @@ export async function fetchMarkets(
     if (params.status) url.searchParams.set('status', params.status)
     if (params.category) url.searchParams.set('category', params.category)
     if (params.search) url.searchParams.set('search', params.search)
+    if (params.min_close_ts) url.searchParams.set('min_close_ts', String(params.min_close_ts))
   }
 
   const headers: Record<string, string> =

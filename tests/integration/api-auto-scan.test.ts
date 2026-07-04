@@ -4,11 +4,15 @@ import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import path from 'path'
 
+// callClaude uses client.messages.stream(...).finalMessage(); mockCreate
+// captures the request params and provides the final message.
 const mockCreate = vi.hoisted(() => vi.fn())
 
 vi.mock('@anthropic-ai/sdk', () => ({
   default: class Anthropic {
-    messages = { create: mockCreate }
+    messages = {
+      stream: (params: any) => ({ finalMessage: () => mockCreate(params) }),
+    }
     constructor(_opts: any) {}
   },
 }))
@@ -23,16 +27,23 @@ vi.mock('@/lib/search', () => ({
   formatWebContext: vi.fn().mockReturnValue(''),
 }))
 
-// Return valid scanner JSON from Claude (ticker must match the market being tested)
-function mockClaudeScan(tickers: string[]) {
+// Return valid scanner JSON from Claude matching the current ScanResultSchema.
+// my_estimate_pct defaults high enough that the code-side effective-edge
+// recomputation (shrinkage + fee) clears the MIN_EFFECTIVE_EDGE threshold.
+function mockClaudeScan(opps: Array<{ ticker: string; estimate?: number }>) {
   const scanJson = JSON.stringify({
-    opportunities: tickers.map(ticker => ({
+    opportunities: opps.map(({ ticker, estimate = 80 }) => ({
       ticker,
-      action: 'BET',
+      title: `Opportunity ${ticker}`,
       direction: 'YES',
+      my_estimate_pct: estimate,
+      market_price_pct: 50,
+      edge_pct: 10,
       score: 75,
-      edge: 0.10,
-      rationale: 'test',
+      rationale: 'test rationale',
+      key_risk: 'test risk',
+      flags: [],
+      confidence: 'HIGH',
     })),
     screened_out: [],
     session_notes: 'test session',
@@ -70,6 +81,9 @@ function mockKalshiMarkets(markets: any[]) {
   }))
 }
 
+// volume_24h is a CONTRACT count; the pipeline converts to dollar volume as
+// contracts × midpoint. yes_bid is required — markets without a NO-side quote
+// (no no_ask and no yes_bid) are dropped as unquotable.
 const openMarkets = [
   { ticker: 'FED-DEC', title: 'Will Fed cut in December?', yes_ask: 45, yes_bid: 43, volume_24h: 5000, category: 'Economics' },
   { ticker: 'NFL-KC', title: 'Will Chiefs win Super Bowl?', yes_ask: 30, yes_bid: 28, volume_24h: 12000, category: 'Sports' },
@@ -126,10 +140,12 @@ describe('POST /api/auto-scan', () => {
     const data = await res.json()
 
     expect(res.status).toBe(404)
-    expect(data.error).toContain('No markets found')
+    // Error names the funnel stage that emptied the scan
+    expect(data.error).toContain('No markets survived filtering')
+    expect(data.error).toContain('Funnel')
   })
 
-  it('normalizes Kalshi cent-prices to decimal', async () => {
+  it('normalizes Kalshi cent-prices to decimal and recomputes effective edge', async () => {
     const { saveSettings, getSettings } = await import('@/lib/storage')
     const settings = getSettings()
     settings.kalshi_api_key = 'kx-test-key'
@@ -139,7 +155,7 @@ describe('POST /api/auto-scan', () => {
     mockKalshiMarkets([
       { ticker: 'FED-DEC', title: 'Fed cut December', yes_ask: 45, yes_bid: 43, volume_24h: 5000 },
     ])
-    mockClaudeScan(['FED-DEC'])
+    mockClaudeScan([{ ticker: 'FED-DEC', estimate: 75 }])
 
     vi.resetModules()
     const { POST } = await import('@/app/api/auto-scan/route')
@@ -151,21 +167,30 @@ describe('POST /api/auto-scan', () => {
     expect(res.status).toBe(200)
     // yes_price uses ask price: 45 cents → 0.45 decimal
     expect(data.opportunities[0].yes_price).toBeCloseTo(0.45, 2)
-    expect(data.opportunities[0].no_price).toBeCloseTo(0.55, 2)
+    // NO ask is derived from 1 − yes_bid (never 1 − yes_ask, which would be
+    // the yes bid and understate cost): 1 − 0.43 = 0.57
+    expect(data.opportunities[0].no_price).toBeCloseTo(0.57, 2)
+    // Effective edge is recomputed in code, never taken from Claude:
+    // p_shrunk = 0.6×0.45 + 0.4×0.75 = 0.57
+    // fee = 0.07 × 0.45 × 0.55 = 0.017325
+    // edge = (0.57 − 0.45 − 0.017325) × 100 = 10.27 (2dp)
+    expect(data.opportunities[0].edge_pct).toBeCloseTo(10.27, 2)
+    expect(data.opportunities[0].p_shrunk).toBeCloseTo(0.57, 6)
+    expect(data.opportunities[0].execution_price).toBeCloseTo(0.45, 6)
   })
 
-  it('falls back to last_price when yes_ask and yes_bid are zero', async () => {
+  it('drops markets that only have a stale last_price (no live orderbook)', async () => {
     const { saveSettings, getSettings } = await import('@/lib/storage')
     const settings = getSettings()
     settings.kalshi_api_key = 'kx-test-key'
     settings.anthropic_api_key = 'sk-ant-test-key'
     saveSettings(settings)
 
-    // yes_ask=0, yes_bid=0, but last_price=50 (still in cents)
+    // yes_ask=0, yes_bid=0, only a last trade print — there is no live market
+    // to execute against, so the market must be dropped, not priced at 0.50.
     mockKalshiMarkets([
-      { ticker: 'FALLBACK', title: 'Fallback price test', yes_ask: 0, yes_bid: 0, last_price: 50, volume_24h: 2000 },
+      { ticker: 'STALE', title: 'Stale price test', yes_ask: 0, yes_bid: 0, last_price: 50, volume_24h: 2000 },
     ])
-    mockClaudeScan(['FALLBACK'])
 
     vi.resetModules()
     const { POST } = await import('@/app/api/auto-scan/route')
@@ -174,8 +199,10 @@ describe('POST /api/auto-scan', () => {
     const res = await POST(req)
     const data = await res.json()
 
-    expect(res.status).toBe(200)
-    expect(data.opportunities[0].yes_price).toBeCloseTo(0.5, 2)
+    expect(res.status).toBe(404)
+    expect(data.error).toContain('No markets survived filtering')
+    // Funnel shows the market died at the two-sided-quote stage
+    expect(data.error).toContain('0 with live two-sided quotes')
   })
 
   it('filters out markets with yes_price below 0.03', async () => {
@@ -189,7 +216,7 @@ describe('POST /api/auto-scan', () => {
       { ticker: 'EXTREME-LOW', title: 'Near zero', yes_ask: 2, yes_bid: 1, volume_24h: 1000 },
       { ticker: 'NORMAL', title: 'Normal market', yes_ask: 45, yes_bid: 43, volume_24h: 5000 },
     ])
-    mockClaudeScan(['NORMAL'])
+    mockClaudeScan([{ ticker: 'NORMAL', estimate: 75 }])
 
     vi.resetModules()
     const { POST } = await import('@/app/api/auto-scan/route')
@@ -215,7 +242,7 @@ describe('POST /api/auto-scan', () => {
       { ticker: 'EXTREME-HIGH', title: 'Near certain', yes_ask: 98, yes_bid: 97, volume_24h: 1000 },
       { ticker: 'NORMAL', title: 'Normal market', yes_ask: 55, yes_bid: 53, volume_24h: 5000 },
     ])
-    mockClaudeScan(['NORMAL'])
+    mockClaudeScan([{ ticker: 'NORMAL', estimate: 80 }])
 
     vi.resetModules()
     const { POST } = await import('@/app/api/auto-scan/route')
@@ -230,18 +257,20 @@ describe('POST /api/auto-scan', () => {
     expect(data.opportunities[0].ticker).toBe('NORMAL')
   })
 
-  it('applies min_volume filter', async () => {
+  it('applies min_volume filter on dollar volume (contracts × midpoint)', async () => {
     const { saveSettings, getSettings } = await import('@/lib/storage')
     const settings = getSettings()
     settings.kalshi_api_key = 'kx-test-key'
     settings.anthropic_api_key = 'sk-ant-test-key'
     saveSettings(settings)
 
+    // LOW-VOL: 100 contracts × mid 0.44 = $44 (< 500, dropped)
+    // HIGH-VOL: 5000 contracts × mid 0.54 = $2700 (≥ 500, kept)
     mockKalshiMarkets([
       { ticker: 'LOW-VOL', title: 'Low volume', yes_ask: 45, yes_bid: 43, volume_24h: 100 },
       { ticker: 'HIGH-VOL', title: 'High volume', yes_ask: 55, yes_bid: 53, volume_24h: 5000 },
     ])
-    mockClaudeScan(['HIGH-VOL'])
+    mockClaudeScan([{ ticker: 'HIGH-VOL', estimate: 80 }])
 
     vi.resetModules()
     const { POST } = await import('@/app/api/auto-scan/route')
@@ -268,7 +297,7 @@ describe('POST /api/auto-scan', () => {
       { ticker: 'HIGH', title: 'High volume market', yes_ask: 60, yes_bid: 58, volume_24h: 10000 },
       { ticker: 'MED', title: 'Medium volume market', yes_ask: 50, yes_bid: 48, volume_24h: 2000 },
     ])
-    mockClaudeScan(['HIGH', 'MED'])
+    mockClaudeScan([{ ticker: 'HIGH', estimate: 85 }, { ticker: 'MED', estimate: 80 }])
 
     vi.resetModules()
     const { POST } = await import('@/app/api/auto-scan/route')
@@ -283,6 +312,63 @@ describe('POST /api/auto-scan', () => {
     // Volume ordering: Claude user message should mention HIGH before MED
     const userMsg = mockCreate.mock.calls[0][0].messages[0].content
     expect(userMsg.indexOf('High volume')).toBeLessThan(userMsg.indexOf('Medium volume'))
+    expect(userMsg).not.toContain('Low volume market')
+  })
+
+  it('screens out opportunities below the effective-edge threshold with receipts', async () => {
+    const { saveSettings, getSettings } = await import('@/lib/storage')
+    const settings = getSettings()
+    settings.kalshi_api_key = 'kx-test-key'
+    settings.anthropic_api_key = 'sk-ant-test-key'
+    saveSettings(settings)
+
+    mockKalshiMarkets([
+      { ticker: 'WEAK', title: 'Weak edge market', yes_ask: 50, yes_bid: 48, volume_24h: 5000 },
+    ])
+    // estimate 55%: p_shrunk = 0.6×0.50 + 0.4×0.55 = 0.52
+    // edge = (0.52 − 0.50 − 0.07×0.5×0.5) × 100 = 0.25% < 2.5% threshold
+    mockClaudeScan([{ ticker: 'WEAK', estimate: 55 }])
+
+    vi.resetModules()
+    const { POST } = await import('@/app/api/auto-scan/route')
+
+    const req = makeRequest({ limit: 15 })
+    const res = await POST(req)
+    const data = await res.json()
+
+    expect(res.status).toBe(200)
+    expect(data.opportunities).toHaveLength(0)
+    const screened = data.screened_out.find((s: any) => s.ticker === 'WEAK')
+    expect(screened).toBeDefined()
+    expect(screened.reason).toContain('Effective edge')
+  })
+
+  it('screens out opportunities whose ticker matches no scanned market', async () => {
+    const { saveSettings, getSettings } = await import('@/lib/storage')
+    const settings = getSettings()
+    settings.kalshi_api_key = 'kx-test-key'
+    settings.anthropic_api_key = 'sk-ant-test-key'
+    saveSettings(settings)
+
+    mockKalshiMarkets([
+      { ticker: 'REAL-MKT', title: 'Real market', yes_ask: 45, yes_bid: 43, volume_24h: 5000 },
+    ])
+    // Claude hallucinates a ticker that was never scanned — prices cannot be
+    // verified, so the opportunity must be dropped, not trusted.
+    mockClaudeScan([{ ticker: 'HALLUCINATED', estimate: 90 }])
+
+    vi.resetModules()
+    const { POST } = await import('@/app/api/auto-scan/route')
+
+    const req = makeRequest({ limit: 15 })
+    const res = await POST(req)
+    const data = await res.json()
+
+    expect(res.status).toBe(200)
+    expect(data.opportunities).toHaveLength(0)
+    const screened = data.screened_out.find((s: any) => s.ticker === 'HALLUCINATED')
+    expect(screened).toBeDefined()
+    expect(screened.reason).toContain('did not match any scanned market')
   })
 
   it('returns opportunities, screened_out, and markets_scanned on success', async () => {
@@ -293,7 +379,7 @@ describe('POST /api/auto-scan', () => {
     saveSettings(settings)
 
     mockKalshiMarkets(openMarkets)
-    mockClaudeScan(['FED-DEC'])
+    mockClaudeScan([{ ticker: 'FED-DEC', estimate: 75 }])
 
     vi.resetModules()
     const { POST } = await import('@/app/api/auto-scan/route')

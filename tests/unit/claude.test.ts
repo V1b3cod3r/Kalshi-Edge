@@ -1,10 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-const mockCreate = vi.hoisted(() => vi.fn())
+// callClaude uses the streaming API (client.messages.stream(...).finalMessage())
+// to avoid HTTP timeouts on long scanner/analysis responses. The mock captures
+// the request params and returns a MessageStream-like object.
+const mockStream = vi.hoisted(() => vi.fn())
 
 vi.mock('@anthropic-ai/sdk', () => ({
   default: class Anthropic {
-    messages = { create: mockCreate }
+    messages = {
+      stream: (params: any) => ({ finalMessage: () => mockStream(params) }),
+    }
     constructor(_opts: any) {}
   },
 }))
@@ -12,11 +17,11 @@ vi.mock('@anthropic-ai/sdk', () => ({
 describe('callClaude', () => {
   beforeEach(() => {
     vi.resetModules()
-    mockCreate.mockReset()
+    mockStream.mockReset()
   })
 
   it('returns text from a successful response', async () => {
-    mockCreate.mockResolvedValue({
+    mockStream.mockResolvedValue({
       content: [{ type: 'text', text: 'Analysis complete' }],
     })
     const { callClaude } = await import('@/lib/claude')
@@ -25,46 +30,92 @@ describe('callClaude', () => {
     expect(result).toBe('Analysis complete')
   })
 
-  it('passes system prompt and user message to the API', async () => {
-    mockCreate.mockResolvedValue({
+  it('returns the text block even when thinking blocks precede it', async () => {
+    // Adaptive thinking puts thinking blocks before the text block —
+    // callClaude must find the text block by type, not assume content[0].
+    mockStream.mockResolvedValue({
+      content: [
+        { type: 'thinking', thinking: 'Let me reason about this...' },
+        { type: 'text', text: 'Final answer' },
+      ],
+    })
+    const { callClaude } = await import('@/lib/claude')
+
+    const result = await callClaude('sk-test', 'sys', 'msg')
+    expect(result).toBe('Final answer')
+  })
+
+  it('passes system prompt as a cache-controlled block and user message to the API', async () => {
+    mockStream.mockResolvedValue({
       content: [{ type: 'text', text: 'ok' }],
     })
     const { callClaude } = await import('@/lib/claude')
 
     await callClaude('sk-key', 'my system prompt', 'my user message')
 
-    const callArgs = mockCreate.mock.calls[0][0]
-    expect(callArgs.system).toBe('my system prompt')
+    const callArgs = mockStream.mock.calls[0][0]
+    // System prompt is sent as a block array with ephemeral caching
+    expect(Array.isArray(callArgs.system)).toBe(true)
+    expect(callArgs.system[0].type).toBe('text')
+    expect(callArgs.system[0].text).toBe('my system prompt')
+    expect(callArgs.system[0].cache_control).toEqual({ type: 'ephemeral' })
     expect(callArgs.messages[0].content).toBe('my user message')
     expect(callArgs.messages[0].role).toBe('user')
   })
 
-  it('uses the claude-sonnet-4-6 model', async () => {
-    mockCreate.mockResolvedValue({
+  it('uses the claude-opus-4-8 model', async () => {
+    mockStream.mockResolvedValue({
       content: [{ type: 'text', text: 'ok' }],
     })
     const { callClaude } = await import('@/lib/claude')
 
     await callClaude('sk-key', 'sys', 'msg')
 
-    const callArgs = mockCreate.mock.calls[0][0]
-    expect(callArgs.model).toBe('claude-sonnet-4-6')
+    const callArgs = mockStream.mock.calls[0][0]
+    expect(callArgs.model).toBe('claude-opus-4-8')
   })
 
-  it('uses max_tokens 4096', async () => {
-    mockCreate.mockResolvedValue({
+  it('uses max_tokens 16000 with adaptive thinking at default effort', async () => {
+    mockStream.mockResolvedValue({
       content: [{ type: 'text', text: 'ok' }],
     })
     const { callClaude } = await import('@/lib/claude')
 
     await callClaude('sk-key', 'sys', 'msg')
 
-    const callArgs = mockCreate.mock.calls[0][0]
-    expect(callArgs.max_tokens).toBe(4096)
+    const callArgs = mockStream.mock.calls[0][0]
+    expect(callArgs.max_tokens).toBe(16000)
+    expect(callArgs.thinking).toEqual({ type: 'adaptive' })
   })
 
-  it('throws when content type is not text', async () => {
-    mockCreate.mockResolvedValue({
+  it('raises max_tokens to 64000 at xhigh/max effort so thinking cannot truncate the answer', async () => {
+    mockStream.mockResolvedValue({
+      content: [{ type: 'text', text: 'ok' }],
+    })
+    const { callClaude } = await import('@/lib/claude')
+
+    await callClaude('sk-key', 'sys', 'msg', { effort: 'max' })
+    expect(mockStream.mock.calls[0][0].max_tokens).toBe(64000)
+
+    await callClaude('sk-key', 'sys', 'msg', { effort: 'xhigh' })
+    expect(mockStream.mock.calls[1][0].max_tokens).toBe(64000)
+  })
+
+  it('defaults effort to high and honors an explicit effort override', async () => {
+    mockStream.mockResolvedValue({
+      content: [{ type: 'text', text: 'ok' }],
+    })
+    const { callClaude } = await import('@/lib/claude')
+
+    await callClaude('sk-key', 'sys', 'msg')
+    expect(mockStream.mock.calls[0][0].output_config).toEqual({ effort: 'high' })
+
+    await callClaude('sk-key', 'sys', 'msg', { effort: 'max' })
+    expect(mockStream.mock.calls[1][0].output_config).toEqual({ effort: 'max' })
+  })
+
+  it('throws when the response contains no text block', async () => {
+    mockStream.mockResolvedValue({
       content: [{ type: 'tool_use', id: 'tool-1', name: 'some_tool', input: {} }],
     })
     const { callClaude } = await import('@/lib/claude')
@@ -75,7 +126,7 @@ describe('callClaude', () => {
   })
 
   it('propagates API errors', async () => {
-    mockCreate.mockRejectedValue(new Error('Rate limit exceeded'))
+    mockStream.mockRejectedValue(new Error('Rate limit exceeded'))
     const { callClaude } = await import('@/lib/claude')
 
     await expect(callClaude('sk-key', 'sys', 'msg')).rejects.toThrow('Rate limit exceeded')

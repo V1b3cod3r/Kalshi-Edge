@@ -4,11 +4,15 @@ import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import path from 'path'
 
+// callClaude uses client.messages.stream(...).finalMessage(); mockCreate
+// captures the request params and provides the final message.
 const mockCreate = vi.hoisted(() => vi.fn())
 
 vi.mock('@anthropic-ai/sdk', () => ({
   default: class Anthropic {
-    messages = { create: mockCreate }
+    messages = {
+      stream: (params: any) => ({ finalMessage: () => mockCreate(params) }),
+    }
     constructor(_opts: any) {}
   },
 }))

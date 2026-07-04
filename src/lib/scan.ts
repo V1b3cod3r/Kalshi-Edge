@@ -92,12 +92,16 @@ export function normalizeMarket(m: any): MarketInput | null {
   // (a "cheap-looking" stale print is staleness, not edge).
   if (!yes_price || !no_price) return null
 
-  // Volume: always compute 24h dollar volume as contracts × midpoint price.
-  // Kalshi's raw volume_24h is contract count; their _fp fields are inconsistent.
-  // Computing ourselves gives a reliable dollar figure for filtering and display.
-  const contracts_24h = Number(m.volume_24h) || 0
+  // Volume: compute dollar volume as contracts × midpoint price. Field names
+  // vary across Kalshi payload variants — prefer the 24h contract count, fall
+  // back to lifetime volume rather than defaulting everything to zero (a zero
+  // default makes any volume filter silently wipe the whole scan).
+  const contracts =
+    Number(m.volume_24h ?? m.volume_24h_fp) ||
+    Number(m.volume ?? m.volume_fp) ||
+    0
   const mid = (yes_price + (1 - no_price)) / 2
-  const volume_24h = contracts_24h * mid
+  const volume_24h = contracts * mid
 
   // Resolution date
   const resolution_date = m.close_time || m.expiration_time || m.expected_expiration_ts || undefined
@@ -359,11 +363,15 @@ export async function runScan(params: RunScanParams = {}): Promise<RunScanResult
     .slice(0, limit)
 
   if (normalized.length === 0) {
+    // If the volume stage did the killing, show the best volume we actually
+    // computed — distinguishes "genuinely quiet markets" from "volume field
+    // missing, everything is $0".
+    const maxVol = inCategory.reduce((mx, m) => Math.max(mx, m.volume_24h ?? 0), 0)
     const funnel =
       `${rawMarkets.length} fetched → ${quoted.length} with live two-sided quotes → ` +
       `${unexpired.length} unexpired → ${midRange.length} priced 3–97¢` +
       (category && category !== 'All' ? ` → ${inCategory.length} in "${category}"` : '') +
-      ` → ${aboveVolume.length} above $${min_volume} 24h volume`
+      ` → ${aboveVolume.length} above $${min_volume} volume (highest seen: $${maxVol.toFixed(0)})`
     throw new ScanError('no_markets', `No markets survived filtering. Funnel: ${funnel}.`)
   }
 

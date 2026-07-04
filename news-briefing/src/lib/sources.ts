@@ -1,4 +1,4 @@
-import type { SourceFeed } from "./types";
+import type { SourceFeed, SourceId } from "./types";
 
 const DAILY = 18;
 const WEEKLY = 24 * 7;
@@ -162,3 +162,24 @@ export const SOURCES: SourceFeed[] = [
     recencyHours: DAILY,
   },
 ];
+
+export interface SourceInfo {
+  id: SourceId;
+  name: string;
+}
+
+// Deduped list of distinct outlets for UI display and validation — SOURCES
+// has multiple feed URLs per source id (e.g. 3 WSJ feeds), but the user
+// thinks in terms of outlets, not individual RSS URLs.
+export const SOURCE_LIST: SourceInfo[] = (() => {
+  const seen = new Set<SourceId>();
+  const list: SourceInfo[] = [];
+  for (const f of SOURCES) {
+    if (seen.has(f.id)) continue;
+    seen.add(f.id);
+    list.push({ id: f.id, name: f.name });
+  }
+  return list;
+})();
+
+export const SOURCE_IDS = new Set(SOURCE_LIST.map((s) => s.id));

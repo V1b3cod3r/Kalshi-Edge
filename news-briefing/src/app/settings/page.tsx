@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Header } from "@/components/Header";
 import { ModelPicker } from "@/components/ModelPicker";
+import { SourceToggleList } from "@/components/SourceToggleList";
 import { DEFAULT_INTERESTS, loadInterests, saveInterests } from "@/lib/interests";
 import {
   DEFAULT_MODELS,
@@ -12,19 +13,27 @@ import {
   type ModelChoice,
   type ModelId,
 } from "@/lib/models";
+import { loadEnabledSources, saveEnabledSources } from "@/lib/source-prefs";
+import { SOURCE_LIST } from "@/lib/sources";
+import type { SourceId } from "@/lib/types";
 
 const MAX_INTERESTS = 30;
+const ALL_SOURCE_IDS = SOURCE_LIST.map((s) => s.id);
 
 export default function SettingsPage() {
   const router = useRouter();
   const [interests, setInterests] = useState<string[]>([]);
   const [draft, setDraft] = useState("");
   const [models, setModels] = useState<ModelChoice>(DEFAULT_MODELS);
+  const [enabledSources, setEnabledSources] = useState<Set<SourceId>>(
+    () => new Set(ALL_SOURCE_IDS),
+  );
   const [hydrated, setHydrated] = useState(false);
 
   useEffect(() => {
     setInterests(loadInterests());
     setModels(loadModels());
+    setEnabledSources(new Set(loadEnabledSources()));
     setHydrated(true);
   }, []);
 
@@ -58,6 +67,20 @@ export default function SettingsPage() {
     const next = { ...models, summary: id };
     setModels(next);
     saveModels(next);
+  }
+
+  function toggleSource(id: SourceId) {
+    const next = new Set(enabledSources);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    setEnabledSources(next);
+    saveEnabledSources([...next]);
+  }
+
+  function resetSources() {
+    const next = new Set(ALL_SOURCE_IDS);
+    setEnabledSources(next);
+    saveEnabledSources([...next]);
   }
 
   async function logout() {
@@ -138,6 +161,35 @@ export default function SettingsPage() {
                 </li>
               ))}
             </ul>
+          )}
+        </section>
+
+        <section className="rounded-2xl bg-surface shadow-card overflow-hidden">
+          <div className="flex items-center justify-between px-6 py-4 border-b border-surface-line">
+            <div>
+              <h2 className="text-[14px] font-medium text-ink">News sources</h2>
+              <p className="mt-0.5 text-[12px] text-ink-faint">
+                {enabledSources.size} of {ALL_SOURCE_IDS.length} on
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={resetSources}
+              className="pressable text-[13px] text-ink-muted hover:text-ink"
+            >
+              Turn all on
+            </button>
+          </div>
+          <SourceToggleList
+            sources={SOURCE_LIST}
+            enabled={enabledSources}
+            onToggle={toggleSource}
+          />
+          {hydrated && enabledSources.size === 0 && (
+            <p className="px-6 py-3.5 border-t border-surface-line text-[12px] text-[#8a6d1a] bg-[#fff8e5]">
+              No sources are on — your briefing will come back empty until you
+              turn at least one on.
+            </p>
           )}
         </section>
 

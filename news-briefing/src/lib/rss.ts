@@ -117,9 +117,16 @@ export interface FetchAllResult {
   downSources: SourceHealth[];
 }
 
-export async function fetchAllArticles(forceFresh = false): Promise<FetchAllResult> {
+export async function fetchAllArticles(
+  forceFresh = false,
+  enabledSources?: Set<SourceId>,
+): Promise<FetchAllResult> {
+  // Skip disabled sources before fetching, not just after — no point
+  // spending the RSS round-trip on a feed the user turned off.
+  const feeds = enabledSources ? SOURCES.filter((f) => enabledSources.has(f.id)) : SOURCES;
+
   const settled = await Promise.allSettled(
-    SOURCES.map((feed) => fetchFeedRaw(feed, forceFresh)),
+    feeds.map((feed) => fetchFeedRaw(feed, forceFresh)),
   );
 
   // Multiple feeds can share a source id (e.g. WSJ has 3 RSS URLs) — only
@@ -128,7 +135,7 @@ export async function fetchAllArticles(forceFresh = false): Promise<FetchAllResu
   const bySource = new Map<SourceId, { sourceName: string; anyOk: boolean }>();
   const allArticles: RawArticle[] = [];
   settled.forEach((r, i) => {
-    const feed = SOURCES[i];
+    const feed = feeds[i];
     const entry = bySource.get(feed.id) ?? { sourceName: feed.name, anyOk: false };
     if (r.status === "fulfilled") {
       entry.anyOk = entry.anyOk || r.value.ok;

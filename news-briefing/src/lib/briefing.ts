@@ -53,6 +53,8 @@ export function recencyAdjustment(publishedAt: string, source: SourceId): number
 export interface BriefingOptions {
   summaryModel?: string;
   forceFresh?: boolean;
+  /** Source ids to fetch. Omit to fetch all configured sources. */
+  enabledSources?: SourceId[];
 }
 
 interface ClusterCard {
@@ -97,7 +99,8 @@ export async function buildBriefing(
   // summaries.
   const summaryModel = options.summaryModel || SUMMARY_MODEL;
 
-  const { articles: all, downSources } = await fetchAllArticles(options.forceFresh);
+  const enabledSet = options.enabledSources ? new Set(options.enabledSources) : undefined;
+  const { articles: all, downSources } = await fetchAllArticles(options.forceFresh, enabledSet);
   const candidates = prefilter(all, interests, PREFILTER_POOL);
 
   // Scoring and clustering operate on the same prefilter pool and don't

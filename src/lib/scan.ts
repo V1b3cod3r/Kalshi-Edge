@@ -146,8 +146,12 @@ export const SHRINK_MARKET = 0.60
 export const SHRINK_CLAUDE = 0.40
 // Kalshi fee coefficient: fee = 0.07 × P × (1−P) per contract
 export const KALSHI_FEE_COEF = 0.07
-// Default minimum effective edge after fees and shrinkage: 7pp
-export const MIN_EFFECTIVE_EDGE = 0.07
+// Default minimum effective edge after fees and shrinkage. Calibrated to the
+// SHRUNK scale: effective edge ≈ 0.4 × raw disagreement − fee, so 2.5pp here
+// still requires Claude to disagree with the market by ~10-11pp and clears
+// all trading costs. (The old 7pp default demanded a ~22pp disagreement —
+// mathematically near-impossible, which produced permanently empty scans.)
+export const MIN_EFFECTIVE_EDGE = 0.025
 
 export interface ScanProgressEvent {
   phase: 'fetching' | 'filtering' | 'analyzing'
@@ -340,18 +344,32 @@ export async function runScan(params: RunScanParams = {}): Promise<RunScanResult
     throw new ScanError('parse', 'Claude returned an unexpected format. Please try again.')
   }
 
-  // Build a ticker → market map for price lookup
-  const marketByTicker = new Map(normalized.map((m) => [m.id, m]))
+  // Build a ticker → market map for price lookup. Keys normalized (trim +
+  // uppercase) so a cosmetically-mangled ticker from Claude still matches.
+  const tickerKey = (t: string | undefined) => (t ?? '').trim().toUpperCase()
+  const marketByTicker = new Map(normalized.map((m) => [tickerKey(m.id), m]))
+
+  // Collect code-side rejections so an empty result is explainable in the UI
+  // instead of a silent zero.
+  const codeScreened: { ticker: string; title: string; reason: string }[] = []
 
   // Recompute effective edge in code: shrink Claude's estimate toward market
   // price, subtract Kalshi trading fee, filter weak signals.
-  const opportunities: ScanOpportunity[] = (scanResult.opportunities || [])
+  const scored: ScanOpportunity[] = (scanResult.opportunities || [])
     // Drop opportunities whose ticker doesn't match a scanned market — a
     // mangled/hallucinated ticker means we can't verify prices, so we can't
     // trust (or execute) the trade. Fail-safe: skip.
-    .filter((opp) => marketByTicker.has(opp.ticker))
+    .filter((opp) => {
+      if (marketByTicker.has(tickerKey(opp.ticker))) return true
+      codeScreened.push({
+        ticker: opp.ticker,
+        title: opp.title,
+        reason: 'Ticker did not match any scanned market — cannot verify prices',
+      })
+      return false
+    })
     .map((opp): ScanOpportunity => {
-      const market = marketByTicker.get(opp.ticker)!
+      const market = marketByTicker.get(tickerKey(opp.ticker))!
       const p_claude = (opp.my_estimate_pct ?? 50) / 100
       // Anchor shrinkage on the REAL quote, never Claude's self-reported
       // market price — 60% of the blend riding on a hallucinatable number
@@ -385,17 +403,28 @@ export async function runScan(params: RunScanParams = {}): Promise<RunScanResult
         execution_price,
       }
     })
-    // Filter out opportunities that don't clear the effective edge threshold
-    .filter((opp) => opp.edge_pct >= min_effective_edge * 100)
-    // Re-sort by effective edge descending
     .sort((a, b) => b.edge_pct - a.edge_pct)
+
+  // Partition on the effective-edge threshold; rejected ones become visible
+  // screened-out entries with the computed number, so "0 opportunities" always
+  // comes with receipts (and makes threshold tuning possible).
+  const opportunities = scored.filter((opp) => opp.edge_pct >= min_effective_edge * 100)
+  for (const opp of scored) {
+    if (opp.edge_pct < min_effective_edge * 100) {
+      codeScreened.push({
+        ticker: opp.ticker,
+        title: opp.title,
+        reason: `Effective edge ${opp.edge_pct.toFixed(1)}% after shrinkage+fees (needs ≥ ${(min_effective_edge * 100).toFixed(1)}%) — Claude said ${opp.direction} at ${opp.my_estimate_pct}% vs market ${Math.round((opp.yes_price ?? 0) * 100)}%`,
+      })
+    }
+  }
 
   // Auto-save scanner opportunities to calibration log (best-effort)
   if (logPredictions) {
     try {
       for (const opp of opportunities) {
         if (!opp.ticker || !opp.direction || (opp.direction as string) === 'NO BET') continue
-        const market = marketByTicker.get(opp.ticker)
+        const market = marketByTicker.get(tickerKey(opp.ticker))
         if (!market) continue
         createPrediction({
           market_title: opp.title || market.title,
@@ -416,7 +445,7 @@ export async function runScan(params: RunScanParams = {}): Promise<RunScanResult
 
   return {
     opportunities,
-    screened_out: scanResult.screened_out || [],
+    screened_out: [...codeScreened, ...(scanResult.screened_out || [])],
     session_notes: scanResult.session_notes || '',
     markets_scanned: normalized.length,
   }

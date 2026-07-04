@@ -29,7 +29,10 @@ const DEFAULT_SESSION: SessionState = {
 const DEFAULT_AUTOPILOT: AutopilotSettings = {
   enabled: false,
   dry_run: true,
-  min_effective_edge_pct: 7,
+  // Post-shrinkage scale: 4pp effective requires Claude to disagree with the
+  // market by ~15pp (see scan.ts). The old default of 7 needed ~22pp — an
+  // unpassable bar that guaranteed zero trades.
+  min_effective_edge_pct: 4,
   min_confidence: 'HIGH',
   max_per_trade_usd: 25,
   max_daily_spend_usd: 100,

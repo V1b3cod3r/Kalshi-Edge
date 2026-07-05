@@ -154,12 +154,16 @@ export const SOURCES: SourceFeed[] = [
     url: "https://marginalrevolution.com/feed",
     recencyHours: DAILY,
   },
-  // Project Syndicate — global economics/policy commentaries
+  // Project Syndicate — global economics/policy commentaries. Contributors
+  // publish roughly weekly, not multiple times a day like a wire service, so
+  // this uses the same 7-day window as the Economist/Fed rather than DAILY —
+  // otherwise a great piece can age out of the 18h cutoff before it's ever
+  // scored.
   {
     id: "ps",
     name: "Project Syndicate",
     url: "https://www.project-syndicate.org/rss",
-    recencyHours: DAILY,
+    recencyHours: WEEKLY,
   },
 ];
 

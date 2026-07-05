@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { AutopilotSettings, AutopilotRun, AutopilotTrade } from '@/lib/types'
+import { AutopilotSettings, AutopilotRun, AutopilotTrade, CalibrationStats } from '@/lib/types'
 import { ToastNotification } from '@/components/SessionPanel'
 
 interface Toast {
@@ -28,6 +28,7 @@ interface StatusData {
   last_run: LastRunSummary | null
   today_spend_usd: number
   today_realized_pnl_usd: number | null
+  calibration: CalibrationStats
 }
 
 const INTERVAL_OPTIONS = [
@@ -355,6 +356,8 @@ export default function AutopilotPage() {
       take_profit_pct: form.take_profit_pct,
       stop_loss_pct: form.stop_loss_pct,
       scan_limit: form.scan_limit,
+      max_days_to_resolution: form.max_days_to_resolution,
+      min_resolved_predictions_for_live: form.min_resolved_predictions_for_live,
     })
     if (ok) showToast('Guardrails saved', 'success')
   }
@@ -545,6 +548,32 @@ export default function AutopilotPage() {
         </button>
       </div>
 
+      {/* Go-live gate: real orders are blocked in code until calibration proves out */}
+      {(() => {
+        const cal = status.calibration
+        const required = ap.min_resolved_predictions_for_live
+        const enoughSamples = cal.resolved_predictions >= required
+        const beatsMarket = cal.market_brier != null && cal.claude_brier < cal.market_brier
+        const gateMet = enoughSamples && beatsMarket
+        const color = gateMet ? '#22c55e' : '#f59e0b'
+        return (
+          <div
+            className="rounded-xl border p-4 mb-6 text-xs"
+            style={{ backgroundColor: '#1e1e2e', borderColor: `${color}50`, color: '#94a3b8' }}
+          >
+            <div className="font-bold mb-1" style={{ color }}>
+              {gateMet ? 'Live-trading gate: MET' : 'Live-trading gate: NOT MET (real orders blocked in code)'}
+            </div>
+            <div>
+              {cal.resolved_predictions}/{required} predictions resolved
+              {cal.market_brier != null && (
+                <> · Claude Brier {cal.claude_brier.toFixed(3)} vs market {cal.market_brier.toFixed(3)} ({beatsMarket ? 'beats market' : 'does not beat market'})</>
+              )}
+            </div>
+          </div>
+        )
+      })()}
+
       {/* Run controls */}
       <Section title="Run">
         <div className="flex items-center gap-4 flex-wrap">
@@ -641,6 +670,16 @@ export default function AutopilotPage() {
             <label style={labelStyle}>Max per cluster ($)</label>
             <input type="number" min={1} value={form.max_per_cluster_usd}
               onChange={(e) => setForm({ ...form, max_per_cluster_usd: parseFloat(e.target.value) || 0 })} style={inputStyle} />
+          </div>
+          <div>
+            <label style={labelStyle}>Max days to resolution</label>
+            <input type="number" min={1} max={730} value={form.max_days_to_resolution}
+              onChange={(e) => setForm({ ...form, max_days_to_resolution: parseInt(e.target.value) || 0 })} style={inputStyle} />
+          </div>
+          <div>
+            <label style={labelStyle}>Resolved preds required for live</label>
+            <input type="number" min={0} max={500} value={form.min_resolved_predictions_for_live}
+              onChange={(e) => setForm({ ...form, min_resolved_predictions_for_live: parseInt(e.target.value) || 0 })} style={inputStyle} />
           </div>
           <div className="col-span-2 md:col-span-3">
             <label style={labelStyle}>Category blacklist (comma-separated)</label>

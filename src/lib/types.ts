@@ -86,6 +86,8 @@ export interface AutopilotSettings {
   exit_enabled: boolean            // default true — manage open positions each cycle
   take_profit_pct: number          // default 40 — sell when position up >= this % of entry cost
   stop_loss_pct: number            // default 50 — sell when position down >= this % of entry cost
+  max_days_to_resolution: number   // default 45 — skip markets resolving further out than this (capital velocity + faster calibration feedback)
+  min_resolved_predictions_for_live: number // default 30 — live orders blocked until this many predictions have resolved AND Claude beats the market's Brier score on this history
 }
 
 export interface AppSettings {

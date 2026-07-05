@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { getSettings, getAutopilotRuns } from '@/lib/storage'
+import { getSettings, getAutopilotRuns, getCalibrationStats } from '@/lib/storage'
 import { getTodaySpend, realizedPnlTodayFromSettlements } from '@/lib/autopilot'
 import { getPortfolioSettlements, KalshiAuth } from '@/lib/kalshi'
 
@@ -45,6 +45,7 @@ export async function GET() {
         : null,
       today_spend_usd: getTodaySpend(),
       today_realized_pnl_usd: todayPnl,
+      calibration: getCalibrationStats(),
     })
   } catch (error: any) {
     return NextResponse.json(

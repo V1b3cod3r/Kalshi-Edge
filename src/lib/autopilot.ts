@@ -3,6 +3,7 @@ import {
   getAutopilotRuns,
   appendAutopilotRun,
   createPrediction,
+  getCalibrationStats,
 } from '@/lib/storage'
 import {
   placeOrder,
@@ -10,6 +11,8 @@ import {
   getPortfolioBalance,
   getPortfolioPositions,
   getPortfolioSettlements,
+  getOpenOrders,
+  cancelOrder,
   KalshiAuth,
 } from '@/lib/kalshi'
 import { runScan, ScanOpportunity, KALSHI_FEE_COEF } from '@/lib/scan'
@@ -43,6 +46,36 @@ export function clusterForTicker(ticker: string, title?: string): string {
     if (keywords.some((k) => haystack.includes(k))) return cluster
   }
   return ticker.slice(0, 4).toUpperCase()
+}
+
+// Orders are priced at the current ask expecting an immediate fill (see the
+// buy loop below) — 60s is generous headroom for that, not a resting window.
+// Anything still open after this either filled seconds ago (harmless no-op
+// cancel) or the price moved away, in which case it should never sit forever
+// silently consuming spend/exposure headroom.
+const ORDER_EXPIRATION_SECONDS = 60
+
+// Reconciliation safety net: cancel any order still resting from a prior
+// cycle (crash, timeout, expiration_ts not honored by an older order) before
+// this cycle's balance/exposure snapshot is taken. Best-effort — a failure
+// here must never block the cycle; the exit pass and guardrails already
+// protect capital even if a stray order lingers.
+async function reconcileStaleOrders(auth: KalshiAuth): Promise<void> {
+  try {
+    const orders = await getOpenOrders(auth)
+    const staleCutoffMs = Date.now() - 5 * 60 * 1000
+    for (const o of orders) {
+      const createdMs = Date.parse(o.created_time ?? '')
+      if (Number.isFinite(createdMs) && createdMs > staleCutoffMs) continue
+      try {
+        await cancelOrder(auth, o.order_id)
+      } catch {
+        // one stuck order must never block reconciliation of the rest
+      }
+    }
+  } catch {
+    // reconciliation is hygiene, not correctness — never abort the cycle
+  }
 }
 
 // Parse a BID price from a Kalshi market object into decimal dollars (what you
@@ -125,6 +158,31 @@ export async function runAutopilotCycle(): Promise<AutopilotReport> {
     const auth: KalshiAuth = {
       keyId: settings.kalshi_api_key,
       privateKey: settings.kalshi_private_key,
+    }
+
+    // GO-LIVE GATE: never place a REAL order until this account's own
+    // calibration history shows Claude actually beats the market's Brier
+    // score over a large enough resolved sample. Dry-run is exempt — dry-run
+    // is how that history accumulates in the first place. Mirrors the
+    // circuit-breaker pattern below: a hard, code-enforced halt rather than a
+    // suggestion.
+    if (!ap.dry_run) {
+      const calibration = getCalibrationStats()
+      const required = ap.min_resolved_predictions_for_live
+      const enoughSamples = calibration.resolved_predictions >= required
+      const beatsMarket = calibration.market_brier != null && calibration.claude_brier < calibration.market_brier
+      if (!enoughSamples || !beatsMarket) {
+        report.status = 'halted'
+        report.halted = !enoughSamples
+          ? `Live trading gate not met: only ${calibration.resolved_predictions}/${required} predictions have resolved. Switch to dry-run and keep scanning until enough history accumulates.`
+          : `Live trading gate not met: Claude Brier ${calibration.claude_brier.toFixed(3)} does not beat market Brier ${calibration.market_brier!.toFixed(3)} over ${calibration.resolved_predictions} resolved predictions. The model is not demonstrably better than the market yet — switch back to dry-run.`
+        report.finished_at = new Date().toISOString()
+        appendAutopilotRun(report)
+        return report
+      }
+      // Best-effort: clear out anything left resting from a prior cycle
+      // before this cycle's balance/exposure snapshot is taken.
+      await reconcileStaleOrders(auth)
     }
 
     // b. Fetch balance, open positions, and settlements from Kalshi.
@@ -256,6 +314,7 @@ export async function runAutopilotCycle(): Promise<AutopilotReport> {
               count,
               price_cents: Math.round(sellPrice * 100),
               action: 'sell',
+              expiration_ts: Math.floor(Date.now() / 1000) + ORDER_EXPIRATION_SECONDS,
             })
             report.trades.push({ ...sellTrade, executed: true, order_id: order.order_id })
           }
@@ -298,6 +357,7 @@ export async function runAutopilotCycle(): Promise<AutopilotReport> {
       limit: ap.scan_limit ?? 40,
       min_volume: 0,
       min_effective_edge: Math.min(ap.min_effective_edge_pct / 100, 0.07),
+      max_days_to_resolution: ap.max_days_to_resolution,
       logPredictions: false,
     })
     report.markets_scanned = scan.markets_scanned
@@ -339,6 +399,7 @@ export async function runAutopilotCycle(): Promise<AutopilotReport> {
           side: trade.side,
           count: trade.contracts,
           price_cents: priceCents,
+          expiration_ts: Math.floor(Date.now() / 1000) + ORDER_EXPIRATION_SECONDS,
         })
         report.trades.push({ ...trade, executed: true, order_id: order.order_id })
 

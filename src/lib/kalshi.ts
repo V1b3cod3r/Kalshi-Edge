@@ -156,6 +156,12 @@ export interface PlaceOrderRequest {
   price_cents: number // limit price in cents (1–99)
   action?: 'buy' | 'sell' // default 'buy'; 'sell' closes a held position on the same side
   client_order_id?: string
+  // Unix seconds after which Kalshi cancels the order server-side if unfilled.
+  // Autopilot prices orders at the current ask expecting an immediate fill —
+  // without this, a marketable order that doesn't fill (price moved, thin
+  // book) rests indefinitely, silently tying up spend/exposure headroom that
+  // the next cycle still counts as spent.
+  expiration_ts?: number
 }
 
 export interface PlaceOrderResult {
@@ -188,6 +194,10 @@ export async function placeOrder(
     body.no_price = req.price_cents
   }
 
+  if (req.expiration_ts) {
+    body.expiration_ts = req.expiration_ts
+  }
+
   const headers = getSignedHeaders(auth, 'POST', urlPath)
 
   const res = await fetch(`${KALSHI_BASE_URL}/portfolio/orders`, {
@@ -211,6 +221,33 @@ export async function placeOrder(
     count: o.count,
     yes_price: o.yes_price,
     created_time: o.created_time,
+  }
+}
+
+// Resting (unfilled/partially-filled) orders — used to reconcile stale orders
+// left over from a prior cycle before placing new ones.
+export async function getOpenOrders(auth: KalshiAuth): Promise<any[]> {
+  const urlPath = `${PATH_PREFIX}/portfolio/orders`
+  const res = await fetch(`${KALSHI_BASE_URL}/portfolio/orders?status=resting`, {
+    headers: getSignedHeaders(auth, 'GET', urlPath),
+  })
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(`Kalshi API error ${res.status}: ${text}`)
+  }
+  const data = await res.json()
+  return data.orders || []
+}
+
+export async function cancelOrder(auth: KalshiAuth, orderId: string): Promise<void> {
+  const urlPath = `${PATH_PREFIX}/portfolio/orders/${orderId}`
+  const res = await fetch(`${KALSHI_BASE_URL}/portfolio/orders/${orderId}`, {
+    method: 'DELETE',
+    headers: getSignedHeaders(auth, 'DELETE', urlPath),
+  })
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(`Kalshi order cancel error ${res.status}: ${text}`)
   }
 }
 

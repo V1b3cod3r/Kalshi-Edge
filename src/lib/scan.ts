@@ -1,4 +1,4 @@
-import { getViews, getSession, getSettings, getCalibrationStats, createPrediction, getRelevantLessons } from '@/lib/storage'
+import { getViews, getSession, getSettings, getCalibrationStats, createPrediction, getRelevantLessons, getPredictions } from '@/lib/storage'
 import { buildScannerSystemPrompt, buildScannerUserMessage } from '@/lib/prompts'
 import { callClaude } from '@/lib/claude'
 import { fetchMarkets } from '@/lib/kalshi'
@@ -192,6 +192,8 @@ export interface ScanOpportunity {
   category: string
   p_shrunk: number           // shrunk P(YES), 0–1
   execution_price: number | null // ask price for the chosen side, 0–1; null if market lookup failed
+  days_to_resolution: number | null   // null when resolution_date is missing/unparseable
+  annualized_edge_pct: number | null  // edge_pct scaled to a 365-day capital-velocity basis; null when days_to_resolution is null
 }
 
 export interface RunScanParams {
@@ -200,6 +202,11 @@ export interface RunScanParams {
   min_volume?: number
   // Minimum effective edge (fraction, e.g. 0.07 = 7pp). Defaults to MIN_EFFECTIVE_EDGE.
   min_effective_edge?: number
+  // Exclude markets resolving further out than this many days. Long-dated
+  // markets tie up capital for years to earn a few points of edge and never
+  // resolve fast enough to feed the calibration loop. Undefined = no cap
+  // (back-compat for callers that want the full universe, e.g. manual scanner).
+  max_days_to_resolution?: number
   // Log opportunities to the calibration prediction store (default true, source 'scanner').
   logPredictions?: boolean
   onProgress?: (event: ScanProgressEvent) => void
@@ -218,6 +225,7 @@ export async function runScan(params: RunScanParams = {}): Promise<RunScanResult
     limit = 15,
     min_volume = 0,
     min_effective_edge = MIN_EFFECTIVE_EDGE,
+    max_days_to_resolution,
     logPredictions = true,
     onProgress,
   } = params
@@ -345,8 +353,24 @@ export async function runScan(params: RunScanParams = {}): Promise<RunScanResult
     return !Number.isFinite(ts) || ts > now
   })
 
+  // Cap the resolution horizon BEFORE sorting by volume — otherwise the most
+  // liquid markets on all of Kalshi (typically multi-year politics/macro
+  // questions) crowd out short-dated ones, which is exactly backwards: those
+  // long-dated markets tie up capital for years per point of edge and their
+  // predictions never resolve fast enough to validate the model. Undated
+  // markets pass through uncapped (can't judge a horizon that isn't there).
+  const withinHorizon = max_days_to_resolution
+    ? unexpired.filter((m) => {
+        if (!m.resolution_date) return true
+        const ts = Date.parse(m.resolution_date)
+        if (!Number.isFinite(ts)) return true
+        const days = (ts - now) / (1000 * 60 * 60 * 24)
+        return days <= max_days_to_resolution
+      })
+    : unexpired
+
   // Remove near-certain markets (no edge at extremes)
-  const midRange = unexpired.filter((m) => m.yes_price >= 0.03 && m.yes_price <= 0.97)
+  const midRange = withinHorizon.filter((m) => m.yes_price >= 0.03 && m.yes_price <= 0.97)
 
   // Apply category filter post-normalize — our mapCategory bucketing is more
   // reliable than Kalshi's raw category strings.
@@ -369,7 +393,9 @@ export async function runScan(params: RunScanParams = {}): Promise<RunScanResult
     const maxVol = inCategory.reduce((mx, m) => Math.max(mx, m.volume_24h ?? 0), 0)
     const funnel =
       `${rawMarkets.length} fetched → ${quoted.length} with live two-sided quotes → ` +
-      `${unexpired.length} unexpired → ${midRange.length} priced 3–97¢` +
+      `${unexpired.length} unexpired` +
+      (max_days_to_resolution ? ` → ${withinHorizon.length} resolving within ${max_days_to_resolution}d` : '') +
+      ` → ${midRange.length} priced 3–97¢` +
       (category && category !== 'All' ? ` → ${inCategory.length} in "${category}"` : '') +
       ` → ${aboveVolume.length} above $${min_volume} volume (highest seen: $${maxVol.toFixed(0)})`
     throw new ScanError('no_markets', `No markets survived filtering. Funnel: ${funnel}.`)
@@ -459,6 +485,17 @@ export async function runScan(params: RunScanParams = {}): Promise<RunScanResult
         : (1 - p_shrunk) - execution_price
       const effective_edge_pct = (raw_edge - fee) * 100
 
+      // Days to resolution → annualized edge, so a 5% edge resolving in a week
+      // ranks above a 5% edge resolving in two years (same edge, far more
+      // capital-efficient). Floor at 1 day so same-day markets don't divide
+      // toward infinity.
+      const days_to_resolution = market.resolution_date
+        ? Math.max(1, (Date.parse(market.resolution_date) - Date.now()) / (1000 * 60 * 60 * 24))
+        : null
+      const annualized_edge_pct = days_to_resolution
+        ? parseFloat(((effective_edge_pct * 365) / days_to_resolution).toFixed(1))
+        : null
+
       return {
         ...opp,
         edge_pct: parseFloat(effective_edge_pct.toFixed(2)),
@@ -469,9 +506,15 @@ export async function runScan(params: RunScanParams = {}): Promise<RunScanResult
         category: market?.category ?? 'Other/General',
         p_shrunk,
         execution_price,
+        days_to_resolution,
+        annualized_edge_pct,
       }
     })
-    .sort((a, b) => b.edge_pct - a.edge_pct)
+    // Rank by capital-annualized edge, not raw edge — this decides both display
+    // order and (in autopilot) which opportunities get first claim on limited
+    // daily-spend/exposure headroom. Undated opportunities fall back to raw
+    // edge and sort after every dated one.
+    .sort((a, b) => (b.annualized_edge_pct ?? -Infinity) - (a.annualized_edge_pct ?? -Infinity) || b.edge_pct - a.edge_pct)
 
   // Partition on the effective-edge threshold; rejected ones become visible
   // screened-out entries with the computed number, so "0 opportunities" always
@@ -490,8 +533,18 @@ export async function runScan(params: RunScanParams = {}): Promise<RunScanResult
   // Auto-save scanner opportunities to calibration log (best-effort)
   if (logPredictions) {
     try {
+      // A ticker with an unresolved prediction already logged gets re-surfaced
+      // every scan until it resolves — without this, the same market racks up
+      // duplicate entries (seen in practice: one ticker logged twice 4 minutes
+      // apart) and silently inflates by_category/by_source counts.
+      const pendingTickers = new Set(
+        getPredictions()
+          .filter((p) => p.outcome === undefined && p.ticker)
+          .map((p) => tickerKey(p.ticker))
+      )
       for (const opp of opportunities) {
         if (!opp.ticker || !opp.direction || (opp.direction as string) === 'NO BET') continue
+        if (pendingTickers.has(tickerKey(opp.ticker))) continue
         const market = marketByTicker.get(tickerKey(opp.ticker))
         if (!market) continue
         createPrediction({
@@ -505,6 +558,7 @@ export async function runScan(params: RunScanParams = {}): Promise<RunScanResult
           resolution_date: market.resolution_date,
           source: 'scanner',
         })
+        pendingTickers.add(tickerKey(opp.ticker))
       }
     } catch {
       // prediction logging is non-critical

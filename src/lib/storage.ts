@@ -46,6 +46,8 @@ const DEFAULT_AUTOPILOT: AutopilotSettings = {
   take_profit_pct: 40,
   stop_loss_pct: 50,
   scan_limit: 40,
+  max_days_to_resolution: 45,
+  min_resolved_predictions_for_live: 30,
 }
 
 const DEFAULT_SETTINGS: AppSettings = {

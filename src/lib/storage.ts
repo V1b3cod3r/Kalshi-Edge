@@ -45,6 +45,7 @@ const DEFAULT_AUTOPILOT: AutopilotSettings = {
   exit_enabled: true,
   take_profit_pct: 40,
   stop_loss_pct: 50,
+  scan_limit: 40,
 }
 
 const DEFAULT_SETTINGS: AppSettings = {

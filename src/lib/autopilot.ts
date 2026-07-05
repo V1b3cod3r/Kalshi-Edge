@@ -290,8 +290,12 @@ export async function runAutopilotCycle(): Promise<AutopilotReport> {
 
     // c. Run the shared market scan pipeline. Autopilot logs its own
     // predictions for executed trades, so suppress the scanner's logging.
+    // Scanning more markets never loosens a safety gate — it only gives the
+    // confidence/edge/cluster filters more candidates to choose from. A breadth
+    // of 15 statistically surfaced ~0 tradeable opportunities; 40 matches the
+    // manual scanner's sweet spot.
     const scan = await runScan({
-      limit: 15,
+      limit: ap.scan_limit ?? 40,
       min_volume: 0,
       min_effective_edge: Math.min(ap.min_effective_edge_pct / 100, 0.07),
       logPredictions: false,

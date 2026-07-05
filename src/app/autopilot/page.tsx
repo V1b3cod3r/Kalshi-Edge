@@ -354,6 +354,7 @@ export default function AutopilotPage() {
       exit_enabled: form.exit_enabled,
       take_profit_pct: form.take_profit_pct,
       stop_loss_pct: form.stop_loss_pct,
+      scan_limit: form.scan_limit,
     })
     if (ok) showToast('Guardrails saved', 'success')
   }
@@ -588,6 +589,11 @@ export default function AutopilotPage() {
       {/* Guardrails */}
       <Section title="Guardrails">
         <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+          <div>
+            <label style={labelStyle}>Markets to scan / cycle</label>
+            <input type="number" min={5} max={100} step={5} value={form.scan_limit ?? 40}
+              onChange={(e) => setForm({ ...form, scan_limit: parseInt(e.target.value) || 40 })} style={inputStyle} />
+          </div>
           <div>
             <label style={labelStyle}>Min effective edge (%)</label>
             <input type="number" min={1} max={50} step={0.5} value={form.min_effective_edge_pct}

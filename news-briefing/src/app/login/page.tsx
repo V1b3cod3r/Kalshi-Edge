@@ -63,7 +63,7 @@ function LoginForm() {
         placeholder="Password"
       />
       {error && (
-        <p className="mt-3 text-[13px] text-[#d70015]">{error}</p>
+        <p className="mt-3 text-[13px] text-[#d70015] dark:text-[#ff453a]">{error}</p>
       )}
       <button
         type="submit"

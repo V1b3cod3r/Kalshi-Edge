@@ -136,7 +136,7 @@ export default function BriefingPage() {
       />
       <div className="container-narrow">
         {briefing && briefing.downSources.length > 0 && (
-          <div className="mb-4 rounded-xl bg-[#fff8e5] border border-[#f0dca3] px-4 py-3 text-[13px] text-[#8a6d1a]">
+          <div className="mb-4 rounded-xl bg-[#fff8e5] dark:bg-[#3a2f14] border border-[#f0dca3] dark:border-[#5c4a1f] px-4 py-3 text-[13px] text-[#8a6d1a] dark:text-[#e0b566]">
             {briefing.downSources.map((s) => s.sourceName).join(", ")}{" "}
             {briefing.downSources.length === 1 ? "is" : "are"} down right now —
             today&apos;s briefing may be missing some coverage.

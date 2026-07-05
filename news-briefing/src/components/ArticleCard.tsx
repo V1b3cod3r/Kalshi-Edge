@@ -18,24 +18,24 @@ export function ArticleCard({ article, read, onOpen }: ArticleCardProps) {
         read ? "opacity-55" : ""
       }`}
     >
-      <div className="flex items-center gap-3 mb-3 flex-wrap">
+      <div className="flex items-center gap-2 mb-3.5 flex-wrap">
         <SourceBadge source={article.source} />
         {article.matchedInterest && (
-          <span className="text-[12px] text-ink-muted truncate">
+          <span className="text-[12px] font-medium tracking-tight text-ink-muted truncate">
             {article.matchedInterest}
           </span>
         )}
         {age && (
-          <span className="ml-auto text-[12px] text-ink-faint">{age}</span>
+          <span className="ml-auto text-[12px] tabular-nums text-ink-faint">{age}</span>
         )}
       </div>
-      <h2 className="text-[19px] sm:text-[21px] font-semibold leading-snug tracking-[-0.01em] text-ink">
+      <h2 className="text-[20px] sm:text-[22px] font-semibold leading-[1.28] tracking-[-0.02em] text-ink">
         {article.title}
       </h2>
-      <p className="mt-3 text-[15px] leading-[1.6] text-ink-soft">
+      <p className="mt-2.5 text-[15px] leading-[1.65] text-ink-soft">
         {article.summary}
       </p>
-      <div className="mt-5 flex flex-wrap items-center gap-x-5 gap-y-2">
+      <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-1.5">
         <a
           href={article.link}
           target="_blank"
@@ -51,11 +51,11 @@ export function ArticleCard({ article, read, onOpen }: ArticleCardProps) {
         )}
       </div>
       {article.related.length > 0 && (
-        <div className="mt-5 pt-4 border-t border-surface-line">
-          <p className="text-[12px] uppercase tracking-[0.08em] text-ink-faint mb-2">
+        <div className="mt-4 pt-4 border-t border-surface-line">
+          <p className="text-[12px] font-medium uppercase tracking-[0.1em] text-ink-faint mb-2.5">
             Also covered by
           </p>
-          <ul className="space-y-1.5">
+          <ul className="space-y-2">
             {article.related.map((r) => (
               <li key={r.link} className="flex items-baseline gap-2">
                 <span className="text-[12px] font-medium text-ink-muted shrink-0">

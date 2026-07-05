@@ -202,10 +202,10 @@ export default function BriefingPage() {
             {sortedTopStories.length > 0 && (
               <section className="mt-10">
                 <div className="mb-4 px-1">
-                  <h2 className="text-[13px] uppercase tracking-[0.12em] text-ink-faint">
+                  <h2 className="text-[13px] font-medium uppercase tracking-[0.1em] text-ink-faint">
                     Top stories
                   </h2>
-                  <p className="mt-1 text-[13px] text-ink-muted">
+                  <p className="mt-1.5 text-[13px] leading-[1.4] text-ink-muted">
                     Widely covered today — may not match your interests.
                   </p>
                 </div>

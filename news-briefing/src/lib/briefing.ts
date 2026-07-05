@@ -2,10 +2,10 @@ import { fetchAllArticles } from "./rss";
 import { prefilter } from "./prefilter";
 import { SOURCES } from "./sources";
 import {
-  scoreRelevance,
-  clusterArticles,
+  scoreAndCluster,
   summarizeArticles,
   costFor,
+  EMPTY_USAGE,
   SCORING_MODEL,
   SUMMARY_MODEL,
 } from "./claude";
@@ -103,16 +103,12 @@ export async function buildBriefing(
   const { articles: all, downSources } = await fetchAllArticles(options.forceFresh, enabledSet);
   const candidates = prefilter(all, interests, PREFILTER_POOL);
 
-  // Scoring and clustering operate on the same prefilter pool and don't
-  // depend on each other. Run in parallel.
-  const rawCandidates = candidates.map((c) => c.article).slice(0, CLUSTER_POOL);
-  const [
-    { articles: scored, usage: scoringUsage },
-    { clusters, usage: clusteringUsage },
-  ] = await Promise.all([
-    scoreRelevance(candidates, interests, SCORING_MODEL),
-    clusterArticles(rawCandidates, SCORING_MODEL),
-  ]);
+  // One merged Haiku call both scores relevance and clusters by event.
+  // The article payload dominates this stage's input tokens, so sending it
+  // once instead of twice (the old separate scoring + clustering calls)
+  // roughly halves the pre-summary input cost.
+  const { articles: scored, clusters, usage: scoreClusterUsage } =
+    await scoreAndCluster(candidates, interests, SCORING_MODEL);
 
   // Apply the recency adjustment so newer articles bubble up among
   // similarly-relevant peers. Cluster indices map into this same array
@@ -155,8 +151,9 @@ export async function buildBriefing(
     assemble(c, summaries.get(curatedCards.length + i)),
   );
 
-  const scoringCost = costFor(SCORING_MODEL, scoringUsage);
-  const clusteringCost = costFor(SCORING_MODEL, clusteringUsage);
+  const scoringCost = costFor(SCORING_MODEL, scoreClusterUsage);
+  // Clustering is merged into the scoring call — one payload, one price.
+  const clusteringCost = 0;
   const summaryCost = costFor(summaryModel, summaryUsage);
 
   return {
@@ -171,8 +168,8 @@ export async function buildBriefing(
       clustering: clusteringCost,
       summary: summaryCost,
       total: scoringCost + clusteringCost + summaryCost,
-      scoringUsage,
-      clusteringUsage,
+      scoringUsage: scoreClusterUsage,
+      clusteringUsage: EMPTY_USAGE,
       summaryUsage,
       scoringModel: SCORING_MODEL,
       summaryModel,

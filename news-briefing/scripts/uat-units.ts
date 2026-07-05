@@ -101,6 +101,10 @@ ok(
   recencyAdjustment(hoursAgo(20), "fed") === 0,
 );
 ok(
+  "recency: 20h-old Project Syndicate article is NOT docked (reclassified slow-cadence)",
+  recencyAdjustment(hoursAgo(20), "ps") === 0,
+);
+ok(
   "recency: 2h-old article (any source) still gets the fresh boost",
   recencyAdjustment(hoursAgo(2), "wsj") === 2 && recencyAdjustment(hoursAgo(2), "economist") === 2,
 );

@@ -195,7 +195,7 @@ export default function SettingsPage() {
 
         <ModelPicker
           title="Summaries"
-          description="Writes the 6–8 sentence summary for each article. Sonnet writes more elegant prose; Haiku is 3× cheaper."
+          description="Writes the 6–8 sentence summary for each article. Sonnet writes more elegant prose; Haiku is 3× cheaper. Summaries are cached for 2 days, so refreshes only pay for new articles."
           value={models.summary}
           onChange={setSummary}
         />

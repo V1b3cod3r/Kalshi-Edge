@@ -549,11 +549,16 @@ export function buildScannerUserMessage(
   msg += '\n'
   msg += `Please scan the following ${markets.length} markets:\n\n`
 
+  // Token-budget caps for the per-market blocks. Kalshi resolution rules can
+  // run 1-2K chars each; across a 40-75 market batch the untruncated versions
+  // dominated input cost while adding little signal beyond the first sentences.
+  const cap = (s: string, n: number) => (s.length > n ? s.slice(0, n).trimEnd() + '…' : s)
+
   markets.forEach((m, i) => {
-    msg += `${i + 1}. ${m.title}${m.id ? ` [${m.id}]` : ''}\n`
+    msg += `${i + 1}. ${cap(m.title, 160)}${m.id ? ` [${m.id}]` : ''}\n`
     msg += `   YES @ $${m.yes_price.toFixed(2)} / NO @ $${m.no_price.toFixed(2)}\n`
     if (m.resolution_criteria) {
-      msg += `   Resolution: ${m.resolution_criteria}\n`
+      msg += `   Resolution: ${cap(m.resolution_criteria, 300)}\n`
     }
     if (m.resolution_date) {
       msg += `   Expires: ${m.resolution_date}\n`
@@ -567,13 +572,13 @@ export function buildScannerUserMessage(
     const signals = signalMap.get(m.id ?? '')
     const signalBlock = formatSignals(signals ?? [])
     if (signalBlock) {
-      msg += `   ${signalBlock.replace(/\n/g, '\n   ')}\n`
+      msg += `   ${cap(signalBlock, 700).replace(/\n/g, '\n   ')}\n`
     }
     const webCtx = webContextMap.get(m.id ?? '')
     if (webCtx) {
       const webBlock = formatWebContext(webCtx)
       if (webBlock) {
-        msg += `   ${webBlock.replace(/\n/g, '\n   ')}\n`
+        msg += `   ${cap(webBlock, 900).replace(/\n/g, '\n   ')}\n`
       }
     }
     msg += '\n'

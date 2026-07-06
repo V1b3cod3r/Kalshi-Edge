@@ -100,6 +100,10 @@ export interface AppSettings {
   max_corr_exposure_pct: number // default 0.15
   default_kelly_fraction: 'low' | 'medium' | 'high'
   use_extended_thinking: boolean // effort 'max' (true) vs 'high' (false) on claude-opus-4-8
+  // Model for the breadth scanner (scanner page + autopilot cycles). Deep
+  // single-market analysis always uses Opus 4.8 regardless of this setting.
+  // 'claude-sonnet-5' ≈ 2.5x cheaper per token; 'claude-opus-4-8' = max quality.
+  scanner_model: 'claude-sonnet-5' | 'claude-opus-4-8'
   autopilot: AutopilotSettings
 }
 

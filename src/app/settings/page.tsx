@@ -50,6 +50,7 @@ export default function SettingsPage() {
   const [maxCorrExposure, setMaxCorrExposure] = useState(15)
   const [kellyFraction, setKellyFraction] = useState<'low' | 'medium' | 'high'>('medium')
   const [useExtendedThinking, setUseExtendedThinking] = useState(false)
+  const [scannerModel, setScannerModel] = useState<'claude-sonnet-5' | 'claude-opus-4-8'>('claude-sonnet-5')
 
   // Session state
   const [bankroll, setBankroll] = useState(10000)
@@ -89,6 +90,7 @@ export default function SettingsPage() {
       setMaxCorrExposure(Math.round((s.max_corr_exposure_pct || 0.15) * 100))
       setKellyFraction(s.default_kelly_fraction || 'medium')
       setUseExtendedThinking(s.use_extended_thinking ?? false)
+      setScannerModel(s.scanner_model || 'claude-sonnet-5')
 
       const sess = sessionData.session || {}
       setSession(sess)
@@ -115,6 +117,7 @@ export default function SettingsPage() {
         max_corr_exposure_pct: maxCorrExposure / 100,
         default_kelly_fraction: kellyFraction,
         use_extended_thinking: useExtendedThinking,
+        scanner_model: scannerModel,
       }
       if (anthropicKeyInput) body.anthropic_api_key = anthropicKeyInput
       if (kalshiKeyInput) body.kalshi_api_key = kalshiKeyInput
@@ -548,6 +551,28 @@ export default function SettingsPage() {
                 Extended thinking enabled — each analysis will use up to 8,000 thinking tokens before responding.
               </p>
             )}
+          </div>
+
+          {/* Scanner model (API cost control) */}
+          <div>
+            <label style={labelStyle}>Scanner Model</label>
+            <p className="text-xs mb-2" style={{ color: '#64748b' }}>
+              Model used for breadth scans (Scanner page + Autopilot cycles). Deep single-market
+              analysis always uses Opus 4.8 regardless. Sonnet 5 is ~2.5× cheaper per token with
+              near-Opus quality on this kind of triage — the scanner&apos;s estimates are also blended
+              toward market price and re-checked in code, which limits the quality difference.
+            </p>
+            <select
+              value={scannerModel}
+              onChange={(e) => setScannerModel(e.target.value as 'claude-sonnet-5' | 'claude-opus-4-8')}
+              style={{
+                backgroundColor: '#0d0d15', border: '1px solid #2a2a3e', borderRadius: '8px',
+                color: '#f1f5f9', padding: '8px 12px', fontSize: '13px', width: '100%',
+              }}
+            >
+              <option value="claude-sonnet-5">Sonnet 5 — economical (recommended)</option>
+              <option value="claude-opus-4-8">Opus 4.8 — maximum quality</option>
+            </select>
           </div>
 
           <button

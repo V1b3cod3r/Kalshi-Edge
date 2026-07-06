@@ -1,3 +1,5 @@
+import fs from 'fs'
+import path from 'path'
 import { getViews, getSession, getSettings, getCalibrationStats, createPrediction, getRelevantLessons, getPredictions } from '@/lib/storage'
 import { buildScannerSystemPrompt, buildScannerUserMessage } from '@/lib/prompts'
 import { callClaude } from '@/lib/claude'
@@ -401,6 +403,45 @@ export async function runScan(params: RunScanParams = {}): Promise<RunScanResult
     throw new ScanError('no_markets', `No markets survived filtering. Funnel: ${funnel}.`)
   }
 
+  // --- Scan-result reuse cache ----------------------------------------------
+  // The Claude call below is the tool's dominant API cost. When the SAME
+  // candidate markets at the SAME prices were scanned minutes ago (typical for
+  // back-to-back autopilot cycles on quiet markets), re-running Claude buys
+  // nothing — the inputs are identical. Reuse the prior result. Any price tick,
+  // roster change, or setting change alters the fingerprint → fresh scan.
+  const scannerModel = getSettings().scanner_model ?? 'claude-sonnet-5'
+  const fingerprint =
+    `${scannerModel}|${limit}|${category ?? 'All'}|${min_volume}|${min_effective_edge}|` +
+    normalized.map((m) => `${m.id}:${m.yes_price}:${m.no_price}`).join(',')
+  const SCAN_CACHE_TTL_MS = 30 * 60 * 1000
+  const cacheFile = path.join(
+    process.env.DATA_DIR ?? path.join(process.cwd(), 'data'),
+    'cache',
+    'scan_cache.json'
+  )
+  try {
+    const cached = JSON.parse(fs.readFileSync(cacheFile, 'utf-8'))
+    if (
+      cached.fingerprint === fingerprint &&
+      Date.now() - cached.saved_at < SCAN_CACHE_TTL_MS
+    ) {
+      const ageMin = Math.round((Date.now() - cached.saved_at) / 60000)
+      progress({
+        phase: 'analyzing',
+        message: `Reusing scan from ${ageMin}m ago — same markets at unchanged prices (no Claude call)`,
+        count: normalized.length,
+      })
+      // Predictions were already logged when this result was produced — never
+      // re-log them, regardless of the logPredictions flag.
+      return {
+        ...cached.result,
+        session_notes: `${cached.result.session_notes ? cached.result.session_notes + ' ' : ''}[Reused scan from ${ageMin}m ago — identical markets/prices, no API cost]`,
+      }
+    }
+  } catch {
+    // no cache / unreadable cache → fresh scan
+  }
+
   // Step 3: Fetch real-time signals + web context in parallel
   progress({
     phase: 'analyzing',
@@ -426,7 +467,9 @@ export async function runScan(params: RunScanParams = {}): Promise<RunScanResult
   const systemPrompt = buildScannerSystemPrompt(calibration, relevantLessons)
   const userMessage = buildScannerUserMessage(normalized, views, session, signalMap, webContextMap, calibration)
 
-  const rawResult = await callClaude(settings.anthropic_api_key, systemPrompt, userMessage)
+  const rawResult = await callClaude(settings.anthropic_api_key, systemPrompt, userMessage, {
+    model: scannerModel,
+  })
 
   // Parse Claude's JSON response — strip any accidental markdown fences
   let scanResult: z.infer<typeof ScanResultSchema>
@@ -565,10 +608,20 @@ export async function runScan(params: RunScanParams = {}): Promise<RunScanResult
     }
   }
 
-  return {
+  const result = {
     opportunities,
     screened_out: [...codeScreened, ...(scanResult.screened_out || [])],
     session_notes: scanResult.session_notes || '',
     markets_scanned: normalized.length,
   }
+
+  // Persist for the reuse cache (best-effort — a write failure never breaks a scan)
+  try {
+    fs.mkdirSync(path.dirname(cacheFile), { recursive: true })
+    fs.writeFileSync(cacheFile, JSON.stringify({ fingerprint, saved_at: Date.now(), result }))
+  } catch {
+    // cache is an optimization, not a requirement
+  }
+
+  return result
 }

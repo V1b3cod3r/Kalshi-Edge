@@ -60,6 +60,10 @@ const DEFAULT_SETTINGS: AppSettings = {
   max_corr_exposure_pct: 0.15,
   default_kelly_fraction: 'medium',
   use_extended_thinking: false,
+  // Sonnet 5 for breadth scans by default: the scanner's estimates are shrunk
+  // 60/40 toward market price and gated in code, so triage quality is the
+  // binding constraint far less than cost. Deep analysis stays on Opus 4.8.
+  scanner_model: 'claude-sonnet-5',
   autopilot: DEFAULT_AUTOPILOT,
 }
 

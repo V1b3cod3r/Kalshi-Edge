@@ -5,6 +5,11 @@ export interface ClaudeOptions {
   // the deepest analysis (slower, pricier). 'xhigh' is Opus 4.7-specific between
   // high and max. Maps to output_config.effort on 4.7.
   effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+  // Model override. Default is Opus 4.8 (deep analysis). The scanner may pass
+  // Sonnet 5 for breadth triage — ~2.5x cheaper per token, near-Opus on this
+  // kind of structured estimation; both models share the same request shape
+  // (adaptive thinking + output_config.effort).
+  model?: string
 }
 
 export interface StreamCallbacks {
@@ -19,7 +24,7 @@ export async function callClaude(
   options: ClaudeOptions = {}
 ): Promise<string> {
   const client = new Anthropic({ apiKey })
-  const { effort = 'high' } = options
+  const { effort = 'high', model = 'claude-opus-4-8' } = options
 
   // Adaptive thinking spends output tokens on reasoning BEFORE the answer, so
   // the ceiling must cover thinking + a potentially large JSON body (a scan of
@@ -32,7 +37,7 @@ export async function callClaude(
   // Streaming prevents HTTP timeouts on long analysis/scanner responses.
   // finalMessage() collects the complete response including thinking blocks.
   const stream = client.messages.stream({
-    model: 'claude-opus-4-8',
+    model,
     max_tokens: maxTokens,
     // Adaptive thinking: Opus 4.7+ only supports adaptive (not enabled+budget_tokens).
     // Claude decides when and how much to think based on task complexity.

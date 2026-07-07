@@ -371,6 +371,98 @@ describe('POST /api/auto-scan', () => {
     expect(screened.reason).toContain('did not match any scanned market')
   })
 
+  it('clamps an out-of-range percentage instead of failing the whole scan', async () => {
+    // Structured outputs guarantees field TYPES but the API does not support
+    // numeric min/max constraints, so Claude can legally emit e.g. 104.2 for
+    // a percentage. That used to hard-fail the entire scan via a Zod .parse()
+    // throw ("Claude returned an unexpected format") even though the payload
+    // was otherwise perfectly good.
+    const { saveSettings, getSettings } = await import('@/lib/storage')
+    const settings = getSettings()
+    settings.kalshi_api_key = 'kx-test-key'
+    settings.anthropic_api_key = 'sk-ant-test-key'
+    saveSettings(settings)
+
+    mockKalshiMarkets(openMarkets)
+    mockCreate.mockResolvedValue({
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          opportunities: [{
+            ticker: 'FED-DEC',
+            title: 'Will Fed cut in December?',
+            direction: 'YES',
+            my_estimate_pct: 104.2, // out of [0,100] — API schema can't enforce this
+            market_price_pct: -3,   // also out of range
+            edge_pct: 10,
+            score: 75,
+            rationale: 'test rationale',
+            key_risk: 'test risk',
+            flags: [],
+            confidence: 'HIGH',
+          }],
+          screened_out: [],
+          session_notes: '',
+        }),
+      }],
+    })
+
+    vi.resetModules()
+    const { POST } = await import('@/app/api/auto-scan/route')
+
+    const req = makeRequest({ limit: 15 })
+    const res = await POST(req)
+    const data = await res.json()
+
+    expect(res.status).toBe(200)
+    expect(data.opportunities.length).toBeGreaterThan(0)
+  })
+
+  it('surfaces the actual failure reason when Claude truly returns bad data', async () => {
+    const { saveSettings, getSettings } = await import('@/lib/storage')
+    const settings = getSettings()
+    settings.kalshi_api_key = 'kx-test-key'
+    settings.anthropic_api_key = 'sk-ant-test-key'
+    saveSettings(settings)
+
+    mockKalshiMarkets(openMarkets)
+    // Wrong TYPE (a string where the schema requires a number) — this is a
+    // genuine malformation, not a range issue, and should still fail, but
+    // with a diagnosable message instead of the old generic one.
+    mockCreate.mockResolvedValue({
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          opportunities: [{
+            ticker: 'FED-DEC',
+            title: 'Will Fed cut in December?',
+            direction: 'YES',
+            my_estimate_pct: 'seventy-five', // wrong type
+            market_price_pct: 45,
+            edge_pct: 10,
+            score: 75,
+            rationale: 'test rationale',
+            key_risk: 'test risk',
+            flags: [],
+            confidence: 'HIGH',
+          }],
+          screened_out: [],
+          session_notes: '',
+        }),
+      }],
+    })
+
+    vi.resetModules()
+    const { POST } = await import('@/app/api/auto-scan/route')
+
+    const req = makeRequest({ limit: 15 })
+    const res = await POST(req)
+    const data = await res.json()
+
+    expect(res.status).toBe(500)
+    expect(data.error).toContain('my_estimate_pct')
+  })
+
   it('returns opportunities, screened_out, and markets_scanned on success', async () => {
     const { saveSettings, getSettings } = await import('@/lib/storage')
     const settings = getSettings()

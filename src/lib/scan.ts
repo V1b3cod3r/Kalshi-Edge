@@ -150,6 +150,27 @@ const ScreenedOutSchema = z.object({
   reason: z.string(),
 })
 
+// Structured outputs (json_schema) guarantee every field's TYPE is correct,
+// but numeric range constraints (min/max) are NOT supported by the API's
+// schema format — a percentage arriving as 100.4 or -1 due to rounding would
+// otherwise pass the API's own validation and then hard-fail ours. Clamp
+// obviously-in-spirit values instead of discarding a whole scan over it;
+// genuinely malformed data (wrong type, missing field) still fails below.
+function repairScanJson(parsed: any): any {
+  if (!parsed || typeof parsed !== 'object') return parsed
+  const clampPct = (v: any) =>
+    typeof v === 'number' && Number.isFinite(v) ? Math.min(100, Math.max(0, v)) : v
+  if (Array.isArray(parsed.opportunities)) {
+    parsed.opportunities = parsed.opportunities.map((o: any) => ({
+      ...o,
+      my_estimate_pct: clampPct(o?.my_estimate_pct),
+      market_price_pct: clampPct(o?.market_price_pct),
+      flags: Array.isArray(o?.flags) ? o.flags : [],
+    }))
+  }
+  return parsed
+}
+
 const ScanResultSchema = z.object({
   opportunities: z.array(OpportunitySchema),
   screened_out: z.array(ScreenedOutSchema).default([]),
@@ -550,15 +571,30 @@ export async function runScan(params: RunScanParams = {}): Promise<RunScanResult
     }
   }
   if (parsed == null) {
-    console.error('[scan] Unparseable Claude response (first 500 chars):', rawResult.slice(0, 500))
-    throw new ScanError('parse', 'Claude returned an unexpected format. Please try again.')
+    // Put the actual response in the thrown message (surfaces in the browser
+    // toast) instead of only a server log — the prior generic message gave no
+    // way to diagnose a recurrence without digging through `npm run dev` output.
+    const snippet = rawResult.slice(0, 300).replace(/\s+/g, ' ').trim()
+    throw new ScanError(
+      'parse',
+      `Claude's response wasn't valid JSON. First 300 chars: "${snippet}${rawResult.length > 300 ? '…' : ''}"`
+    )
   }
-  try {
-    scanResult = ScanResultSchema.parse(parsed)
-  } catch (zodErr) {
-    console.error('[scan] Claude JSON failed schema validation:', zodErr, '\nFirst 500 chars:', rawResult.slice(0, 500))
-    throw new ScanError('parse', 'Claude returned an unexpected format. Please try again.')
+  const repaired = repairScanJson(parsed)
+  const zodResult = ScanResultSchema.safeParse(repaired)
+  if (!zodResult.success) {
+    // Structured outputs guarantees field TYPES but not numeric ranges/business
+    // rules, so a schema-shaped-but-out-of-spec response can still reach here.
+    const issues = zodResult.error.issues
+      .slice(0, 3)
+      .map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`)
+      .join('; ')
+    throw new ScanError(
+      'parse',
+      `Claude's response didn't match the expected schema — ${issues}. Try again, or lower the market count.`
+    )
   }
+  scanResult = zodResult.data
 
   // Build a ticker → market map for price lookup. Keys normalized (trim +
   // uppercase) so a cosmetically-mangled ticker from Claude still matches.

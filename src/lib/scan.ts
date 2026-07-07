@@ -518,8 +518,17 @@ export async function runScan(params: RunScanParams = {}): Promise<RunScanResult
   const systemPrompt = buildScannerSystemPrompt(calibration, relevantLessons)
   const userMessage = buildScannerUserMessage(normalized, views, session, signalMap, webContextMap, calibration)
 
+  // Output size scales with market count: Claude writes one JSON entry per
+  // market (an opportunity with rationale/key_risk/flags, or a screened_out
+  // reason), plus adaptive-thinking tokens reasoning about each one. A flat
+  // ceiling truncated mid-response on batches as small as 30 markets — this
+  // grows the budget with the actual workload instead. Streaming makes a
+  // generous ceiling free when unused (billed on tokens actually produced).
+  const scanMaxTokens = Math.min(128000, 24000 + normalized.length * 1200)
+
   const rawResult = await callClaude(settings.anthropic_api_key, systemPrompt, userMessage, {
     model: scannerModel,
+    maxTokens: scanMaxTokens,
     // Structured outputs: the API constrains generation to this schema, so the
     // response is guaranteed parseable JSON regardless of model quirks.
     jsonSchema: SCAN_JSON_SCHEMA,

@@ -14,6 +14,12 @@ export interface ClaudeOptions {
   // outputs). Guarantees parseable JSON — no markdown fences, no prose
   // preamble — eliminating "unexpected format" failures at the source.
   jsonSchema?: Record<string, any>
+  // Explicit output-token ceiling, overriding the effort-based default below.
+  // Callers whose response size scales with an input (e.g. the scanner: one
+  // rationale/reason per market) should compute this from that input rather
+  // than rely on a flat per-effort number — a fixed ceiling was too small on
+  // larger batches regardless of effort level. Clamped to [4096, 128000].
+  maxTokens?: number
 }
 
 export interface StreamCallbacks {
@@ -32,11 +38,13 @@ export async function callClaude(
 
   // Adaptive thinking spends output tokens on reasoning BEFORE the answer, so
   // the ceiling must cover thinking + a potentially large JSON body (a scan of
-  // many markets emits opportunities + screened_out for each). 16K was too
-  // tight: on a big scan, thinking alone hit the cap and no text block was ever
-  // produced. Since we stream, a high ceiling costs nothing when unused
-  // (billing is on actual output tokens) and only prevents truncation.
-  const maxTokens = effort === 'xhigh' || effort === 'max' ? 64000 : 32000
+  // many markets emits opportunities + screened_out for each). A flat number
+  // here was too small on large batches regardless of effort — the caller
+  // should pass maxTokens explicitly when response size scales with an input.
+  // Since we stream, a high ceiling costs nothing when unused (billing is on
+  // actual output tokens) and only prevents truncation.
+  const defaultMaxTokens = effort === 'xhigh' || effort === 'max' ? 64000 : 32000
+  const maxTokens = Math.min(128000, Math.max(4096, options.maxTokens ?? defaultMaxTokens))
 
   // Streaming prevents HTTP timeouts on long analysis/scanner responses.
   // finalMessage() collects the complete response including thinking blocks.
@@ -74,8 +82,8 @@ export async function callClaude(
     // message instead of a generic one so the user knows the lever to pull.
     if ((message as any).stop_reason === 'max_tokens') {
       throw new Error(
-        'The request was too large to complete within the token limit — ' +
-        'reduce "Markets to scan" to 25–40 and try again.'
+        `The response hit the ${maxTokens.toLocaleString()}-token output limit before finishing — ` +
+        'reduce "Markets to scan" (or the size of the request) and try again.'
       )
     }
     throw new Error('Unexpected response type from Claude (no text output)')

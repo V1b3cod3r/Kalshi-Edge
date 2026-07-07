@@ -395,4 +395,41 @@ describe('POST /api/auto-scan', () => {
     expect(typeof data.markets_scanned).toBe('number')
     expect(data.markets_scanned).toBeGreaterThan(0)
   })
+
+  it('scales the Claude output-token budget with market count instead of a flat ceiling', async () => {
+    // Regression: a flat max_tokens truncated responses on batches as small as
+    // 30 markets ("unexpected format" / stop_reason max_tokens) because the
+    // ceiling didn't account for one JSON entry (rationale/key_risk or a
+    // screened_out reason) per market, plus adaptive-thinking tokens per market.
+    const { saveSettings, getSettings } = await import('@/lib/storage')
+    const settings = getSettings()
+    settings.kalshi_api_key = 'kx-test-key'
+    settings.anthropic_api_key = 'sk-ant-test-key'
+    saveSettings(settings)
+
+    // 30 distinct markets — the exact batch size that triggered the bug.
+    const manyMarkets = Array.from({ length: 30 }, (_, i) => ({
+      ticker: `MKT-${i}`,
+      title: `Market number ${i}`,
+      yes_ask: 40,
+      yes_bid: 38,
+      volume_24h: 5000 + i,
+      category: 'Economics',
+    }))
+    mockKalshiMarkets(manyMarkets)
+    mockClaudeScan([{ ticker: 'MKT-0', estimate: 75 }])
+
+    vi.resetModules()
+    const { POST } = await import('@/app/api/auto-scan/route')
+
+    const req = makeRequest({ limit: 30 })
+    const res = await POST(req)
+    expect(res.status).toBe(200)
+
+    // The request actually sent to the API must scale well above the old flat
+    // 32000 ceiling — this is the direct fix for the reported truncation.
+    const sentParams = mockCreate.mock.calls[0][0]
+    expect(sentParams.max_tokens).toBeGreaterThan(32000)
+    expect(sentParams.max_tokens).toBeLessThanOrEqual(128000)
+  })
 })

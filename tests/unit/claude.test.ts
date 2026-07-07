@@ -103,6 +103,37 @@ describe('callClaude', () => {
     expect(mockStream.mock.calls[1][0].max_tokens).toBe(64000)
   })
 
+  it('honors an explicit maxTokens override, clamped to [4096, 128000]', async () => {
+    mockStream.mockResolvedValue({
+      content: [{ type: 'text', text: 'ok' }],
+    })
+    const { callClaude } = await import('@/lib/claude')
+
+    // Scaled request (e.g. a 40-market scan) exceeds the flat effort default
+    await callClaude('sk-key', 'sys', 'msg', { maxTokens: 72000 })
+    expect(mockStream.mock.calls[0][0].max_tokens).toBe(72000)
+
+    // Clamped at the model ceiling, never sent above it
+    await callClaude('sk-key', 'sys', 'msg', { maxTokens: 500000 })
+    expect(mockStream.mock.calls[1][0].max_tokens).toBe(128000)
+
+    // Clamped at the floor, never sent below it
+    await callClaude('sk-key', 'sys', 'msg', { maxTokens: 100 })
+    expect(mockStream.mock.calls[2][0].max_tokens).toBe(4096)
+  })
+
+  it('surfaces the token limit that was actually used when a response truncates', async () => {
+    mockStream.mockResolvedValue({
+      content: [],
+      stop_reason: 'max_tokens',
+    })
+    const { callClaude } = await import('@/lib/claude')
+
+    await expect(callClaude('sk-key', 'sys', 'msg', { maxTokens: 60000 })).rejects.toThrow(
+      /60,000-token/
+    )
+  })
+
   it('defaults effort to high and honors an explicit effort override', async () => {
     mockStream.mockResolvedValue({
       content: [{ type: 'text', text: 'ok' }],

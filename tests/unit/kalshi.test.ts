@@ -210,3 +210,57 @@ describe('getPortfolioBalance', () => {
     await expect(getPortfolioBalance(TEST_AUTH)).rejects.toThrow('403')
   })
 })
+
+describe('fetchWithRetry (network resilience)', () => {
+  beforeEach(() => {
+    vi.resetModules()
+  })
+
+  it('retries once on ECONNRESET and succeeds on the second attempt', async () => {
+    const econnreset = Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' })
+    const fetchMock = vi.fn()
+      .mockRejectedValueOnce(econnreset)
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ markets: [], cursor: null }),
+        text: () => Promise.resolve(''),
+      })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { fetchMarkets } = await import('@/lib/kalshi')
+    const result = await fetchMarkets(null)
+
+    // Genuinely exercises the retry path — a self-recursion bug (retry
+    // wrapper calling itself instead of the real fetch) would hang or
+    // stack-overflow here rather than resolve.
+    expect(result).toEqual({ markets: [], cursor: null })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('does NOT retry on a normal HTTP error response (e.g. 401) — only connection failures', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 401,
+      text: () => Promise.resolve('Unauthorized'),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { fetchMarkets } = await import('@/lib/kalshi')
+
+    await expect(fetchMarkets(null)).rejects.toThrow('401')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('gives up after exhausting retries on a persistent connection failure', async () => {
+    const econnreset = Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' })
+    const fetchMock = vi.fn().mockRejectedValue(econnreset)
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { fetchMarkets } = await import('@/lib/kalshi')
+
+    await expect(fetchMarkets(null)).rejects.toThrow(/ECONNRESET|failed after/)
+    // Initial attempt + MAX_RETRIES (2) = 3 total calls, never more.
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+  })
+})

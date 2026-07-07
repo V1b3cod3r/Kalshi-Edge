@@ -3,6 +3,55 @@ import { createSign, createPrivateKey, constants } from 'crypto'
 const KALSHI_BASE_URL = 'https://api.elections.kalshi.com/trade-api/v2'
 const PATH_PREFIX = '/trade-api/v2'
 
+// Plain fetch() had no timeout and no retry anywhere in this file. A single
+// dropped connection (ECONNRESET, a Wi-Fi blip, a proxy hiccup) surfaced as a
+// raw unformatted network error straight to the user — most visibly during
+// the scanner's market-fetch pagination, which can be 25 sequential requests.
+// Retries only cover connection-level failures (never HTTP error responses —
+// those are legitimate API answers the caller already handles via !res.ok).
+const FETCH_TIMEOUT_MS = 15000
+const MAX_RETRIES = 2
+const RETRY_BASE_DELAY_MS = 500
+
+function isRetryableNetworkError(err: any): boolean {
+  const code = err?.cause?.code ?? err?.code
+  const msg = String(err?.message ?? err?.cause?.message ?? '')
+  return (
+    code === 'ECONNRESET' ||
+    code === 'ETIMEDOUT' ||
+    code === 'ECONNREFUSED' ||
+    code === 'EPIPE' ||
+    code === 'ENOTFOUND' ||
+    err?.name === 'AbortError' ||
+    /fetch failed/i.test(msg) ||
+    /network/i.test(msg) ||
+    /socket hang up/i.test(msg)
+  )
+}
+
+async function fetchWithRetry(url: string, init: RequestInit = {}): Promise<Response> {
+  let lastErr: any
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS)
+    try {
+      return await fetch(url, { ...init, signal: controller.signal })
+    } catch (err: any) {
+      lastErr = err
+      if (attempt >= MAX_RETRIES || !isRetryableNetworkError(err)) {
+        throw new Error(
+          `Kalshi request failed after ${attempt + 1} attempt(s): ${err?.message || err}`
+        )
+      }
+      await new Promise((r) => setTimeout(r, RETRY_BASE_DELAY_MS * 2 ** attempt))
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+  // Unreachable — the loop above always returns or throws — but keeps TS happy.
+  throw lastErr
+}
+
 // Kalshi uses RSA-PSS signed requests for all authenticated endpoints.
 // Docs: https://trading-api.kalshi.com/docs
 export interface KalshiAuth {
@@ -114,7 +163,7 @@ export async function fetchMarkets(
       ? getSignedHeaders(auth, 'GET', `${PATH_PREFIX}/markets`)
       : { 'Content-Type': 'application/json' }
 
-  const res = await fetch(url.toString(), { headers })
+  const res = await fetchWithRetry(url.toString(), { headers })
 
   if (!res.ok) {
     const text = await res.text()
@@ -138,7 +187,7 @@ export async function fetchMarket(auth: KalshiAuth | null, ticker: string): Prom
       ? getSignedHeaders(auth, 'GET', path)
       : { 'Content-Type': 'application/json' }
 
-  const res = await fetch(`${KALSHI_BASE_URL}/markets/${encodedTicker}`, { headers })
+  const res = await fetchWithRetry(`${KALSHI_BASE_URL}/markets/${encodedTicker}`, { headers })
 
   if (!res.ok) {
     const text = await res.text()
@@ -200,7 +249,7 @@ export async function placeOrder(
 
   const headers = getSignedHeaders(auth, 'POST', urlPath)
 
-  const res = await fetch(`${KALSHI_BASE_URL}/portfolio/orders`, {
+  const res = await fetchWithRetry(`${KALSHI_BASE_URL}/portfolio/orders`, {
     method: 'POST',
     headers,
     body: JSON.stringify(body),
@@ -228,7 +277,7 @@ export async function placeOrder(
 // left over from a prior cycle before placing new ones.
 export async function getOpenOrders(auth: KalshiAuth): Promise<any[]> {
   const urlPath = `${PATH_PREFIX}/portfolio/orders`
-  const res = await fetch(`${KALSHI_BASE_URL}/portfolio/orders?status=resting`, {
+  const res = await fetchWithRetry(`${KALSHI_BASE_URL}/portfolio/orders?status=resting`, {
     headers: getSignedHeaders(auth, 'GET', urlPath),
   })
   if (!res.ok) {
@@ -241,7 +290,7 @@ export async function getOpenOrders(auth: KalshiAuth): Promise<any[]> {
 
 export async function cancelOrder(auth: KalshiAuth, orderId: string): Promise<void> {
   const urlPath = `${PATH_PREFIX}/portfolio/orders/${orderId}`
-  const res = await fetch(`${KALSHI_BASE_URL}/portfolio/orders/${orderId}`, {
+  const res = await fetchWithRetry(`${KALSHI_BASE_URL}/portfolio/orders/${orderId}`, {
     method: 'DELETE',
     headers: getSignedHeaders(auth, 'DELETE', urlPath),
   })
@@ -253,7 +302,7 @@ export async function cancelOrder(auth: KalshiAuth, orderId: string): Promise<vo
 
 export async function getPortfolioBalance(auth: KalshiAuth): Promise<any> {
   const urlPath = `${PATH_PREFIX}/portfolio/balance`
-  const res = await fetch(`${KALSHI_BASE_URL}/portfolio/balance`, {
+  const res = await fetchWithRetry(`${KALSHI_BASE_URL}/portfolio/balance`, {
     headers: getSignedHeaders(auth, 'GET', urlPath),
   })
   if (!res.ok) {
@@ -265,7 +314,7 @@ export async function getPortfolioBalance(auth: KalshiAuth): Promise<any> {
 
 export async function getPortfolioPositions(auth: KalshiAuth): Promise<any> {
   const urlPath = `${PATH_PREFIX}/portfolio/positions`
-  const res = await fetch(`${KALSHI_BASE_URL}/portfolio/positions`, {
+  const res = await fetchWithRetry(`${KALSHI_BASE_URL}/portfolio/positions`, {
     headers: getSignedHeaders(auth, 'GET', urlPath),
   })
   if (!res.ok) {
@@ -277,7 +326,7 @@ export async function getPortfolioPositions(auth: KalshiAuth): Promise<any> {
 
 export async function getPortfolioSettlements(auth: KalshiAuth, limit = 50): Promise<any> {
   const urlPath = `${PATH_PREFIX}/portfolio/settlements`
-  const res = await fetch(`${KALSHI_BASE_URL}/portfolio/settlements?limit=${limit}`, {
+  const res = await fetchWithRetry(`${KALSHI_BASE_URL}/portfolio/settlements?limit=${limit}`, {
     headers: getSignedHeaders(auth, 'GET', urlPath),
   })
   if (!res.ok) {

@@ -1,5 +1,64 @@
 import Anthropic from '@anthropic-ai/sdk'
 
+// A streaming request to Claude can hold a connection open for 30-60+ seconds
+// on a large scan — exactly the kind of long-lived connection a flaky Wi-Fi,
+// VPN, or proxy drops mid-stream. Unlike kalshi.ts's short-lived request/
+// response calls, nothing here retried a dropped connection, so the raw
+// unwrapped Node error (e.g. "read ECONNRESET") reached the user directly.
+// Retries only cover connection-level failures — never a genuine API error
+// (bad key, rate limit, content policy) or our own "no text block" checks,
+// which retrying blindly would not fix and would just waste tokens on.
+const MAX_CLAUDE_RETRIES = 2
+const RETRY_BASE_DELAY_MS = 1000
+
+function isRetryableNetworkError(err: any): boolean {
+  const code = err?.cause?.code ?? err?.code
+  const msg = String(err?.message ?? err?.cause?.message ?? '')
+  return (
+    code === 'ECONNRESET' ||
+    code === 'ETIMEDOUT' ||
+    code === 'ECONNREFUSED' ||
+    code === 'EPIPE' ||
+    code === 'ENOTFOUND' ||
+    err?.name === 'AbortError' ||
+    err?.name === 'APIConnectionError' ||
+    /fetch failed/i.test(msg) ||
+    /network/i.test(msg) ||
+    /socket hang up/i.test(msg) ||
+    /ECONNRESET/i.test(msg)
+  )
+}
+
+// Streams can't be resumed mid-flight, so "retry" means re-issuing the whole
+// request from scratch. Safe here because callClaude/callClaudeStream are
+// read-only analysis calls with no side effects — never used for placeOrder.
+async function streamFinalMessageWithRetry(
+  client: Anthropic,
+  params: Record<string, any>
+): Promise<any> {
+  let lastErr: any
+  for (let attempt = 0; attempt <= MAX_CLAUDE_RETRIES; attempt++) {
+    try {
+      const stream = client.messages.stream(params as any)
+      return await stream.finalMessage()
+    } catch (err: any) {
+      lastErr = err
+      if (!isRetryableNetworkError(err)) {
+        throw err // a real API error (bad key, rate limit, etc.) — never retry
+      }
+      if (attempt >= MAX_CLAUDE_RETRIES) {
+        throw new Error(
+          `Connection to Claude was interrupted after ${attempt + 1} attempt(s): ` +
+          `${err?.message || err}. This is usually a network blip — check your ` +
+          'connection and try again.'
+        )
+      }
+      await new Promise((r) => setTimeout(r, RETRY_BASE_DELAY_MS * 2 ** attempt))
+    }
+  }
+  throw lastErr
+}
+
 export interface ClaudeOptions {
   // Controls reasoning depth and token spend. 'high' is the default; 'max' for
   // the deepest analysis (slower, pricier). 'xhigh' is Opus 4.7-specific between
@@ -48,7 +107,7 @@ export async function callClaude(
 
   // Streaming prevents HTTP timeouts on long analysis/scanner responses.
   // finalMessage() collects the complete response including thinking blocks.
-  const stream = client.messages.stream({
+  const message = await streamFinalMessageWithRetry(client, {
     model,
     max_tokens: maxTokens,
     // Adaptive thinking: Opus 4.7+ only supports adaptive (not enabled+budget_tokens).
@@ -67,11 +126,9 @@ export async function callClaude(
         text: systemPrompt,
         cache_control: { type: 'ephemeral' },
       },
-    ] as any,
+    ],
     messages: [{ role: 'user', content: userMessage }],
-  } as any)
-
-  const message = await stream.finalMessage()
+  })
 
   // Adaptive thinking returns thinking blocks before the text block.
   // Always find by type rather than assuming content[0] is text.
@@ -101,7 +158,7 @@ export async function callClaudeStream(
   const client = new Anthropic({ apiKey })
   const { effort = 'high', onThinking, onText } = options
 
-  const stream = await client.messages.stream({
+  const requestParams = {
     model: 'claude-opus-4-8',
     // Match callClaude's headroom so adaptive thinking never starves the answer.
     max_tokens: effort === 'xhigh' || effort === 'max' ? 64000 : 32000,
@@ -114,27 +171,55 @@ export async function callClaudeStream(
         text: systemPrompt,
         cache_control: { type: 'ephemeral' },
       },
-    ] as any,
+    ],
     messages: [{ role: 'user', content: userMessage }],
-  } as any)
+  }
 
   let accumulatedText = ''
   let accumulatedThinking = ''
 
-  for await (const event of stream) {
-    if (event.type === 'content_block_delta') {
-      const delta = (event as any).delta
-      if (delta?.type === 'thinking_delta') {
-        const chunk: string = delta.thinking || ''
-        accumulatedThinking += chunk
-        onThinking?.(chunk)
-      } else if (delta?.type === 'text_delta') {
-        const chunk: string = delta.text || ''
-        accumulatedText += chunk
-        onText?.(chunk)
+  for (let attempt = 0; attempt <= MAX_CLAUDE_RETRIES; attempt++) {
+    // Fresh accumulators per attempt: only a clean failure before any content
+    // streamed (below) is eligible for retry, so nothing here is ever partial.
+    accumulatedText = ''
+    accumulatedThinking = ''
+    let emittedAny = false
+    try {
+      const stream = await client.messages.stream(requestParams as any)
+      for await (const event of stream) {
+        if (event.type === 'content_block_delta') {
+          const delta = (event as any).delta
+          if (delta?.type === 'thinking_delta') {
+            emittedAny = true
+            const chunk: string = delta.thinking || ''
+            accumulatedThinking += chunk
+            onThinking?.(chunk)
+          } else if (delta?.type === 'text_delta') {
+            emittedAny = true
+            const chunk: string = delta.text || ''
+            accumulatedText += chunk
+            onText?.(chunk)
+          }
+        }
       }
+      return { text: accumulatedText, thinking: accumulatedThinking }
+    } catch (err: any) {
+      // A connection drop after content already reached the UI can't be
+      // silently retried — the caller would see streamed text reset/duplicate.
+      // Surface a clear error instead of a raw one and stop.
+      if (emittedAny || !isRetryableNetworkError(err) || attempt >= MAX_CLAUDE_RETRIES) {
+        if (isRetryableNetworkError(err)) {
+          throw new Error(
+            `Connection to Claude was interrupted${emittedAny ? ' mid-response' : ''} — ` +
+            `${err?.message || err}. This is usually a network blip — try again.`
+          )
+        }
+        throw err
+      }
+      await new Promise((r) => setTimeout(r, RETRY_BASE_DELAY_MS * 2 ** attempt))
     }
   }
 
+  // Unreachable — every loop iteration returns or throws.
   return { text: accumulatedText, thinking: accumulatedThinking }
 }

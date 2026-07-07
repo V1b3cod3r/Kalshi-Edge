@@ -164,4 +164,38 @@ describe('callClaude', () => {
 
     await expect(callClaude('sk-key', 'sys', 'msg')).rejects.toThrow('Rate limit exceeded')
   })
+
+  it('retries a dropped connection (ECONNRESET) and succeeds on the next attempt', async () => {
+    // A long-lived streaming connection can drop mid-request — this exercises
+    // the fix for a raw unwrapped "read ECONNRESET" reaching the user, which
+    // callClaude had zero protection against before (unlike kalshi.ts's calls).
+    const econnreset = Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' })
+    mockStream
+      .mockRejectedValueOnce(econnreset)
+      .mockResolvedValueOnce({ content: [{ type: 'text', text: 'Analysis complete' }] })
+    const { callClaude } = await import('@/lib/claude')
+
+    const result = await callClaude('sk-key', 'sys', 'msg')
+
+    expect(result).toBe('Analysis complete')
+    expect(mockStream).toHaveBeenCalledTimes(2)
+  })
+
+  it('gives up after exhausting retries on a persistent connection failure, with a clear message', async () => {
+    const econnreset = Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' })
+    mockStream.mockRejectedValue(econnreset)
+    const { callClaude } = await import('@/lib/claude')
+
+    await expect(callClaude('sk-key', 'sys', 'msg')).rejects.toThrow(/interrupted/i)
+    // Initial attempt + MAX_CLAUDE_RETRIES (2) = 3 total calls, never more.
+    expect(mockStream).toHaveBeenCalledTimes(3)
+  })
+
+  it('does not retry a non-network error (rate limit) even once', async () => {
+    mockStream.mockRejectedValue(new Error('Rate limit exceeded'))
+    const { callClaude } = await import('@/lib/claude')
+
+    await expect(callClaude('sk-key', 'sys', 'msg')).rejects.toThrow('Rate limit exceeded')
+    expect(mockStream).toHaveBeenCalledTimes(1)
+  })
 })

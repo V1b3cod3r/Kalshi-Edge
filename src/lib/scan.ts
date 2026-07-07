@@ -156,6 +156,57 @@ const ScanResultSchema = z.object({
   session_notes: z.string().optional().default(''),
 })
 
+// JSON Schema mirror of ScanResultSchema for the API's structured outputs —
+// the server constrains generation to this shape, so the response is always
+// pure parseable JSON (no prose preamble, no markdown fences), on any model.
+// Note: numeric min/max constraints are unsupported by structured outputs;
+// the Zod parse afterward still enforces them.
+const SCAN_JSON_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['opportunities', 'screened_out', 'session_notes'],
+  properties: {
+    opportunities: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: [
+          'ticker', 'title', 'direction', 'my_estimate_pct', 'market_price_pct',
+          'edge_pct', 'score', 'rationale', 'key_risk', 'flags', 'confidence',
+        ],
+        properties: {
+          ticker: { type: 'string' },
+          title: { type: 'string' },
+          direction: { type: 'string', enum: ['YES', 'NO'] },
+          my_estimate_pct: { type: 'number' },
+          market_price_pct: { type: 'number' },
+          edge_pct: { type: 'number' },
+          score: { type: 'number' },
+          rationale: { type: 'string' },
+          key_risk: { type: 'string' },
+          flags: { type: 'array', items: { type: 'string' } },
+          confidence: { type: 'string', enum: ['LOW', 'MEDIUM', 'HIGH'] },
+        },
+      },
+    },
+    screened_out: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['ticker', 'title', 'reason'],
+        properties: {
+          ticker: { type: 'string' },
+          title: { type: 'string' },
+          reason: { type: 'string' },
+        },
+      },
+    },
+    session_notes: { type: 'string' },
+  },
+}
+
 // Shrinkage: 60% market / 40% Claude (conservative until calibration proves otherwise)
 export const SHRINK_MARKET = 0.60
 export const SHRINK_CLAUDE = 0.40
@@ -469,15 +520,34 @@ export async function runScan(params: RunScanParams = {}): Promise<RunScanResult
 
   const rawResult = await callClaude(settings.anthropic_api_key, systemPrompt, userMessage, {
     model: scannerModel,
+    // Structured outputs: the API constrains generation to this schema, so the
+    // response is guaranteed parseable JSON regardless of model quirks.
+    jsonSchema: SCAN_JSON_SCHEMA,
   })
 
-  // Parse Claude's JSON response — strip any accidental markdown fences
+  // Parse the response. Structured outputs should make this trivially clean,
+  // but keep layered fallbacks (fence-strip, brace-extraction) as a safety net.
   let scanResult: z.infer<typeof ScanResultSchema>
   const cleaned = rawResult.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim()
+  let parsed: unknown = null
   try {
-    const parsed = JSON.parse(cleaned)
-    scanResult = ScanResultSchema.parse(parsed)
+    parsed = JSON.parse(cleaned)
   } catch {
+    // Last resort: extract the outermost JSON object from surrounding prose
+    const start = cleaned.indexOf('{')
+    const end = cleaned.lastIndexOf('}')
+    if (start >= 0 && end > start) {
+      try { parsed = JSON.parse(cleaned.slice(start, end + 1)) } catch { /* fall through */ }
+    }
+  }
+  if (parsed == null) {
+    console.error('[scan] Unparseable Claude response (first 500 chars):', rawResult.slice(0, 500))
+    throw new ScanError('parse', 'Claude returned an unexpected format. Please try again.')
+  }
+  try {
+    scanResult = ScanResultSchema.parse(parsed)
+  } catch (zodErr) {
+    console.error('[scan] Claude JSON failed schema validation:', zodErr, '\nFirst 500 chars:', rawResult.slice(0, 500))
     throw new ScanError('parse', 'Claude returned an unexpected format. Please try again.')
   }
 

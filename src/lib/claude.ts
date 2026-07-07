@@ -10,6 +10,10 @@ export interface ClaudeOptions {
   // kind of structured estimation; both models share the same request shape
   // (adaptive thinking + output_config.effort).
   model?: string
+  // When set, the API constrains the response to this JSON Schema (structured
+  // outputs). Guarantees parseable JSON — no markdown fences, no prose
+  // preamble — eliminating "unexpected format" failures at the source.
+  jsonSchema?: Record<string, any>
 }
 
 export interface StreamCallbacks {
@@ -24,7 +28,7 @@ export async function callClaude(
   options: ClaudeOptions = {}
 ): Promise<string> {
   const client = new Anthropic({ apiKey })
-  const { effort = 'high', model = 'claude-opus-4-8' } = options
+  const { effort = 'high', model = 'claude-opus-4-8', jsonSchema } = options
 
   // Adaptive thinking spends output tokens on reasoning BEFORE the answer, so
   // the ceiling must cover thinking + a potentially large JSON body (a scan of
@@ -42,7 +46,10 @@ export async function callClaude(
     // Adaptive thinking: Opus 4.7+ only supports adaptive (not enabled+budget_tokens).
     // Claude decides when and how much to think based on task complexity.
     thinking: { type: 'adaptive' } as any,
-    output_config: { effort } as any,
+    output_config: {
+      effort,
+      ...(jsonSchema ? { format: { type: 'json_schema', schema: jsonSchema } } : {}),
+    } as any,
     // Cache the system prompt — the analysis/scanner prompts are 3K+ tokens and
     // stable within a session, so caching saves ~90% of those input tokens on
     // repeated calls (scanner iterates the same prompt across many markets).

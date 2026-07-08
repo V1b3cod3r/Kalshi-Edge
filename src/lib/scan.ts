@@ -550,6 +550,13 @@ export async function runScan(params: RunScanParams = {}): Promise<RunScanResult
   const rawResult = await callClaude(settings.anthropic_api_key, systemPrompt, userMessage, {
     model: scannerModel,
     maxTokens: scanMaxTokens,
+    // 'medium' effort, not the default 'high': the scanner is COARSE TRIAGE, not
+    // final analysis. Every estimate it produces is shrunk 60/40 toward the
+    // market price and re-checked in code before anything trades, so deep
+    // per-market reasoning here is largely wasted thinking tokens. Deep analysis
+    // still runs at high effort on the single-market Analyze page. This roughly
+    // halves the scan's thinking-token spend — the biggest per-scan cost.
+    effort: 'medium',
     // Structured outputs: the API constrains generation to this schema, so the
     // response is guaranteed parseable JSON regardless of model quirks.
     jsonSchema: SCAN_JSON_SCHEMA,

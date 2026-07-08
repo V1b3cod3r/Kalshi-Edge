@@ -524,4 +524,25 @@ describe('POST /api/auto-scan', () => {
     expect(sentParams.max_tokens).toBeGreaterThan(32000)
     expect(sentParams.max_tokens).toBeLessThanOrEqual(128000)
   })
+
+  it('runs the scanner at medium effort (coarse triage, not deep analysis) to cut thinking tokens', async () => {
+    const { saveSettings, getSettings } = await import('@/lib/storage')
+    const settings = getSettings()
+    settings.kalshi_api_key = 'kx-test-key'
+    settings.anthropic_api_key = 'sk-ant-test-key'
+    saveSettings(settings)
+
+    mockKalshiMarkets(openMarkets)
+    mockClaudeScan([{ ticker: 'FED-DEC', estimate: 75 }])
+
+    vi.resetModules()
+    const { POST } = await import('@/app/api/auto-scan/route')
+
+    await POST(makeRequest({ limit: 15 }))
+
+    // The scan is triage — its estimates are shrunk toward market and
+    // re-checked in code, so it must not burn 'high'-effort thinking tokens.
+    const sentParams = mockCreate.mock.calls[0][0]
+    expect(sentParams.output_config.effort).toBe('medium')
+  })
 })

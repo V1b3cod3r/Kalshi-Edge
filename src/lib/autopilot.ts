@@ -431,6 +431,36 @@ export async function runAutopilotCycle(): Promise<AutopilotReport> {
       clusterExposure.set(cluster, (clusterExposure.get(cluster) ?? 0) + trade.cost)
     }
 
+    // VISIBILITY: on a cycle that executed/queued no buys, surface the closest
+    // near-misses so the log shows tangible output ("here's what came close and
+    // why") instead of looking empty or broken. These are markets Claude flagged
+    // that the code screened out — most usefully, ones just below the effective-
+    // edge threshold, whose reason already carries the computed edge. Logged as
+    // informational skips; they render in the existing decision log with no
+    // schema or UI change. Capped so a big scan can't flood the log.
+    const executedOrQueuedBuys = report.trades.some(
+      (t) => t.intent !== 'sell' && !t.skip_reason
+    )
+    if (!executedOrQueuedBuys) {
+      const nearMisses = (scan.screened_out ?? [])
+        .filter((s) => /effective edge/i.test(s.reason))
+        .slice(0, 5)
+      for (const nm of nearMisses) {
+        report.trades.push({
+          ticker: nm.ticker,
+          title: nm.title,
+          side: 'yes',
+          contracts: 0,
+          price: 0,
+          cost: 0,
+          effective_edge_pct: 0,
+          kelly_stake: 0,
+          executed: false,
+          skip_reason: `Near miss — ${nm.reason}`,
+        })
+      }
+    }
+
     report.finished_at = new Date().toISOString()
     appendAutopilotRun(report)
     return report

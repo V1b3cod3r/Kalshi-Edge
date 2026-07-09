@@ -175,14 +175,27 @@ export async function scoreAndCluster(
   return { articles, clusters, usage };
 }
 
-const SUMMARY_SYSTEM = `You are a senior news editor writing a daily briefing. Write a 6-8 sentence summary of the news article excerpt the user provides. The summary must:
+const SUMMARY_SYSTEM = `You are a senior news editor writing a daily briefing. Write a summary of the news article excerpt the user provides. The summary must:
 - Open with the most newsworthy fact, not the source
 - Explain why it matters to a reader interested in finance, markets, business, and policy
 - Be self-contained (the reader will not click through unless intrigued)
 - Use crisp, declarative sentences in active voice
 - Avoid hype, hedging, and filler phrases like "in a recent development"
 
-Return only the summary text — no headers, no preamble, no quotation marks.`;
+Use only the title and excerpt given — never ask for more information, never invent facts not present in them, and never comment on whether the input is sufficient. Write 6-8 sentences when the excerpt supports it; if the excerpt is thin (e.g. headline only, little detail), write 2-3 sentences that stay strictly to what's given rather than padding or speculating. A short accurate summary is always correct output; a refusal or request for more material is never correct output.
+
+Return only the summary text itself — no headers, no preamble, no meta-commentary, no quotation marks.`;
+
+// Defensive guard against the rare case the model still replies
+// conversationally (asking for more source material) instead of producing a
+// summary. Treated as a failed call so it falls back to "Summary
+// unavailable." rather than showing the refusal text to users.
+const REFUSAL_PATTERN =
+  /^(i can'?t|i cannot|i'?m unable|i am unable|unfortunately|please provide|this (excerpt|article) (doesn'?t|does not|contains only))/i;
+
+export function isRefusal(text: string): boolean {
+  return REFUSAL_PATTERN.test(text.trim());
+}
 
 async function summarizeOne(
   article: ScoredArticle,
@@ -206,7 +219,8 @@ async function summarizeOne(
     ],
   });
   const text = textOf(res).trim();
-  return { summary: text.length > 0 ? text : null, usage: readUsage(res) };
+  const usable = text.length > 0 && !isRefusal(text);
+  return { summary: usable ? text : null, usage: readUsage(res) };
 }
 
 interface StoredSummary {
@@ -229,7 +243,7 @@ function cachedSummarizeOne(article: ScoredArticle, model: string): Promise<Stor
     .slice(0, 16);
   const fetcher = unstable_cache(
     async () => ({ ...(await summarizeOne(article, model)), at: Date.now() }),
-    ["summary-v1", model, linkKey],
+    ["summary-v2", model, linkKey],
     { revalidate: SUMMARY_CACHE_SECONDS },
   );
   return fetcher();

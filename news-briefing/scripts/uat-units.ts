@@ -3,6 +3,7 @@
 import { prefilter } from "../src/lib/prefilter";
 import { formatRelative } from "../src/lib/time";
 import { recencyAdjustment } from "../src/lib/briefing";
+import { isRefusal } from "../src/lib/claude";
 import type { RawArticle } from "../src/lib/types";
 
 let failed = 0;
@@ -115,6 +116,34 @@ ok(
 ok(
   "recency: invalid date on weekly source does not dock",
   recencyAdjustment("not-a-date", "economist") === 0,
+);
+
+// --- isRefusal ---
+ok(
+  "isRefusal: catches 'I can't write an effective summary...'",
+  isRefusal(
+    "I can't write an effective summary from this input. The excerpt provided contains only a headline...",
+  ),
+);
+ok(
+  "isRefusal: catches 'Please provide the full article text...'",
+  isRefusal("Please provide the full article text or a substantive excerpt with specific details."),
+);
+ok(
+  "isRefusal: catches 'Unfortunately, ...'",
+  isRefusal("Unfortunately, this excerpt does not contain enough information to summarize."),
+);
+ok(
+  "isRefusal: does NOT flag a normal summary",
+  !isRefusal(
+    "The Federal Reserve signaled Wednesday that it may begin cutting interest rates as early as next quarter.",
+  ),
+);
+ok(
+  "isRefusal: does NOT flag a summary that happens to mention 'unable' mid-sentence",
+  !isRefusal(
+    "Regulators said banks were unable to meet the new capital requirements ahead of the deadline.",
+  ),
 );
 
 console.log(`\n${failed === 0 ? "ALL PASS" : `${failed} FAILED`}`);

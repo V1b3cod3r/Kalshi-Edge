@@ -13,6 +13,9 @@ import {
   getPortfolioSettlements,
   getOpenOrders,
   cancelOrder,
+  positionSignedQuantity,
+  positionCostBasisDollars,
+  settlementProfitDollars,
   KalshiAuth,
 } from '@/lib/kalshi'
 import { runScan, ScanOpportunity, KALSHI_FEE_COEF } from '@/lib/scan'
@@ -123,7 +126,7 @@ export function realizedPnlTodayFromSettlements(settlementsData: any): number {
   for (const s of settlements) {
     const settledAt = s.settled_time ?? s.created_time ?? ''
     if (utcDay(settledAt) !== today) continue
-    pnl += (Number(s.profit) || 0) / 100 // cents → dollars
+    pnl += settlementProfitDollars(s)
   }
   return pnl
 }
@@ -198,15 +201,11 @@ export async function runAutopilotCycle(): Promise<AutopilotReport> {
     let balance = (Number(balanceData?.balance) || 0) / 100 // cents → dollars
 
     const rawPositions: any[] = positionsData?.market_positions ?? positionsData?.positions ?? []
-    const openPositions = rawPositions.filter((p: any) => Math.abs(Number(p.position) || 0) > 0)
+    const openPositions = rawPositions.filter((p: any) => Math.abs(positionSignedQuantity(p)) > 0)
     const openTickers = new Set<string>(openPositions.map((p: any) => String(p.ticker)))
 
-    // Cost basis (dollars) per open position; prefer Kalshi's market_exposure,
-    // fall back to total_traded. Both are in cents.
-    const positionCost = (p: any): number => {
-      const cents = Math.abs(Number(p.market_exposure ?? p.total_traded) || 0)
-      return cents / 100
-    }
+    // Cost basis (dollars) per open position.
+    const positionCost = positionCostBasisDollars
     let openPositionCount = openPositions.length
     let totalExposure = openPositions.reduce((sum: number, p: any) => sum + positionCost(p), 0)
 
@@ -242,8 +241,9 @@ export async function runAutopilotCycle(): Promise<AutopilotReport> {
       for (const pos of openPositions) {
         try {
           const ticker = String(pos.ticker)
-          const count = Math.abs(Number(pos.position))
-          const isYes = Number(pos.position) > 0
+          const signedQty = positionSignedQuantity(pos)
+          const count = Math.abs(signedQty)
+          const isYes = signedQty > 0
           const side: 'yes' | 'no' = isYes ? 'yes' : 'no'
           const cost = positionCost(pos) // dollars, cost basis of this position
           if (!(count > 0) || !(cost > 0)) continue // nothing to value or sell
@@ -334,9 +334,9 @@ export async function runAutopilotCycle(): Promise<AutopilotReport> {
           report.trades.push({
             ticker: String(pos.ticker),
             title: String(pos.ticker),
-            side: Number(pos.position) > 0 ? 'yes' : 'no',
+            side: positionSignedQuantity(pos) > 0 ? 'yes' : 'no',
             intent: 'sell',
-            contracts: Math.abs(Number(pos.position) || 0),
+            contracts: Math.abs(positionSignedQuantity(pos)),
             price: 0,
             cost: 0,
             effective_edge_pct: 0,

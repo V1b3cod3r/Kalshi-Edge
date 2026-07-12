@@ -363,3 +363,63 @@ describe('V2 order translation (__toV2OrderBody) — REAL MONEY, direction-criti
     expect(calledUrl).not.toMatch(/\/portfolio\/orders(\?|$)/)
   })
 })
+
+describe('V2 position/settlement field parsing — REAL MONEY, money-critical', () => {
+  beforeEach(() => { vi.resetModules() })
+
+  // Regression: a live account showed 0 contracts / $0.00 everywhere on real
+  // executed positions — the code was reading the pre-V2 `position` field,
+  // but Kalshi's confirmed V2 schema uses `position_fp` (a decimal STRING).
+
+  it('positionSignedQuantity reads the V2 position_fp field (string) over the legacy position field', async () => {
+    const { positionSignedQuantity } = await import('@/lib/kalshi')
+    expect(positionSignedQuantity({ position_fp: '10.00' })).toBe(10)
+    expect(positionSignedQuantity({ position_fp: '-5.00' })).toBe(-5)
+  })
+
+  it('positionSignedQuantity falls back to the legacy position/quantity fields', async () => {
+    const { positionSignedQuantity } = await import('@/lib/kalshi')
+    expect(positionSignedQuantity({ position: 7 })).toBe(7)
+    expect(positionSignedQuantity({ quantity: -3 })).toBe(-3)
+    expect(positionSignedQuantity({})).toBe(0)
+  })
+
+  it('positionCostBasisDollars reads market_exposure_dollars directly (NO /100 — already dollars)', async () => {
+    const { positionCostBasisDollars } = await import('@/lib/kalshi')
+    // Regression: this field is decimal DOLLARS, not cents. Dividing by 100
+    // (the legacy-field treatment) would silently undervalue every position
+    // 100x.
+    expect(positionCostBasisDollars({ market_exposure_dollars: '12.50' })).toBe(12.5)
+  })
+
+  it('positionCostBasisDollars falls back to legacy cent-integer fields with /100', async () => {
+    const { positionCostBasisDollars } = await import('@/lib/kalshi')
+    expect(positionCostBasisDollars({ market_exposure: 1250 })).toBe(12.5)
+    expect(positionCostBasisDollars({ total_traded: 500 })).toBe(5)
+  })
+
+  it('settlementProfitDollars computes from cost/fee fields when no profit field exists (confirmed V2 shape)', async () => {
+    const { settlementProfitDollars } = await import('@/lib/kalshi')
+    // revenue is NOT dollar-suffixed (legacy cents); cost fields ARE.
+    // 100 contracts won @ $1 → revenue 10000 cents = $100; cost basis $60;
+    // fee $1 → profit = 100 - 60 - 1 = $39.
+    const s = {
+      revenue: 10000,
+      yes_total_cost_dollars: '60.00',
+      no_total_cost_dollars: '0.00',
+      fee_cost: 100, // cents
+    }
+    expect(settlementProfitDollars(s)).toBeCloseTo(39, 5)
+  })
+
+  it('settlementProfitDollars prefers a direct profit field when present (legacy/alternate surface)', async () => {
+    const { settlementProfitDollars } = await import('@/lib/kalshi')
+    expect(settlementProfitDollars({ profit: 500, revenue: 10000, yes_total_cost_dollars: '999.00' })).toBe(5)
+  })
+
+  it('settlementProfitDollars: a losing settlement (revenue 0) computes a negative profit', async () => {
+    const { settlementProfitDollars } = await import('@/lib/kalshi')
+    const s = { revenue: 0, yes_total_cost_dollars: '45.00', no_total_cost_dollars: '0.00', fee_cost: 0 }
+    expect(settlementProfitDollars(s)).toBeCloseTo(-45, 5)
+  })
+})

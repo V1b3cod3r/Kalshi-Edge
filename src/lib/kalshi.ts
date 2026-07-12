@@ -369,3 +369,63 @@ export async function getPortfolioSettlements(auth: KalshiAuth, limit = 50): Pro
   }
   return res.json()
 }
+
+// ---------------------------------------------------------------------------
+// V2 position-field parsing. Confirmed via Kalshi's OpenAPI spec: the
+// GetPositions MarketPosition object uses position_fp (a fixed-point decimal
+// STRING, e.g. "10.00" — contract count, signed: positive = long YES,
+// negative = long NO) and *_dollars decimal-string fields (market_exposure_
+// dollars, total_traded_dollars, realized_pnl_dollars) which are ALREADY IN
+// DOLLARS — unlike this app's other cent-integer Kalshi fields, these must
+// NOT be divided by 100. Every caller that reads a position object should go
+// through these helpers so a schema drift is fixed in one place, not
+// rediscovered independently in autopilot.ts, the P&L route, and the legacy
+// portfolio route (which is exactly what happened before this fix — all
+// three read the pre-V2 field names and silently computed zero for
+// contracts/cost/price on every real position).
+// ---------------------------------------------------------------------------
+
+// Signed contract quantity: positive = long YES, negative = long NO.
+export function positionSignedQuantity(p: any): number {
+  const v = p?.position_fp ?? p?.position ?? p?.quantity
+  return v == null ? 0 : Number(v) || 0
+}
+
+// Cost basis in dollars (unsigned). Prefers the confirmed V2 dollar field,
+// falls back to legacy cent-integer fields for resilience across accounts/
+// API surfaces we haven't verified.
+export function positionCostBasisDollars(p: any): number {
+  if (p?.market_exposure_dollars != null) return Math.abs(Number(p.market_exposure_dollars)) || 0
+  if (p?.total_traded_dollars != null) return Math.abs(Number(p.total_traded_dollars)) || 0
+  const cents = Math.abs(Number(p?.market_exposure ?? p?.total_traded) || 0)
+  return cents / 100
+}
+
+// Realized P&L in dollars (signed). No unrealized_pnl(_dollars) field is
+// confirmed to exist on this schema — unrealized P&L must be computed from a
+// live market quote (current price × quantity − cost basis), not read off
+// the position object.
+export function positionRealizedPnlDollars(p: any): number {
+  if (p?.realized_pnl_dollars != null) return Number(p.realized_pnl_dollars) || 0
+  return (Number(p?.realized_pnl) || 0) / 100
+}
+
+// Settlement profit in dollars (signed). Confirmed via schema research: V2
+// GetSettlements has NO `profit` field — fields are ticker, event_ticker,
+// market_result, yes/no_count_fp, yes/no_total_cost_dollars, revenue,
+// fee_cost, value. Every caller that reads a settlement's P&L (the P&L page,
+// AND the autopilot daily-loss circuit breaker) must go through this one
+// function — three independent copies of "read s.profit" is exactly how the
+// position-field bug this fix is paired with went unnoticed. NOTE: this
+// formula is confirmed-schema-based but not verified against a live settled
+// trade — cross-check against Kalshi's own settlement history once real
+// settlements exist, and correct here first if figures look off.
+export function settlementProfitDollars(s: any): number {
+  if (s?.profit != null) return Number(s.profit) / 100 // legacy/alternate surface
+  const revenue = (Number(s?.revenue) || 0) / 100
+  const costDollars = (Number(s?.yes_total_cost_dollars) || 0) + (Number(s?.no_total_cost_dollars) || 0)
+  const feeDollars = s?.fee_cost_dollars != null
+    ? Number(s.fee_cost_dollars) || 0
+    : (Number(s?.fee_cost) || 0) / 100
+  return revenue - costDollars - feeDollars
+}

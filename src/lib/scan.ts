@@ -55,6 +55,19 @@ export function mapCategory(kalshiCategory: string | undefined, ticker?: string,
   return 'Other/General'
 }
 
+// Parse a Kalshi price field into decimal dollars. Prefer the *_dollars
+// field; the plain field is integer cents in Kalshi v2 (so a raw `1` means
+// 1¢, not $1). Sub-1 values in the plain field are already dollars (legacy
+// payloads). Shared across every place that parses a live Kalshi quote
+// (market normalization here, and portfolio P&L's live-price lookups) so a
+// field-shape fix only ever needs to happen in one place.
+export function parseKalshiPrice(dollarsV: any, centsV: any): number {
+  if (dollarsV != null && Number(dollarsV) > 0) return Number(dollarsV)
+  const c = centsV == null ? 0 : Number(centsV)
+  if (!c || c <= 0) return 0
+  return c >= 1 ? c / 100 : c
+}
+
 // Normalize a Kalshi market object (whose shape can vary) into our MarketInput
 export function normalizeMarket(m: any): MarketInput | null {
   // Skip MVE parlay bundles — user-created multi-leg combos with no real liquidity
@@ -66,21 +79,10 @@ export function normalizeMarket(m: any): MarketInput | null {
 
   // Use ask prices for order placement — bidding at ask fills immediately.
   // Midpoint would leave orders resting below the ask.
-
-  // Parse a price into decimal dollars. Prefer the *_dollars field; the plain
-  // field is integer cents in Kalshi v2 (so a raw `1` means 1¢, not $1).
-  // Sub-1 values in the plain field are already dollars (legacy payloads).
-  const price = (dollarsV: any, centsV: any): number => {
-    if (dollarsV != null && Number(dollarsV) > 0) return Number(dollarsV)
-    const c = centsV == null ? 0 : Number(centsV)
-    if (!c || c <= 0) return 0
-    return c >= 1 ? c / 100 : c
-  }
-
-  const ya = price(m.yes_ask_dollars, m.yes_ask)
-  const yb = price(m.yes_bid_dollars, m.yes_bid)
-  const na = price(m.no_ask_dollars, m.no_ask)
-  const nb = price(m.no_bid_dollars, m.no_bid)
+  const ya = parseKalshiPrice(m.yes_ask_dollars, m.yes_ask)
+  const yb = parseKalshiPrice(m.yes_bid_dollars, m.yes_bid)
+  const na = parseKalshiPrice(m.no_ask_dollars, m.no_ask)
+  const nb = parseKalshiPrice(m.no_bid_dollars, m.no_bid)
 
   // YES ask (cost to buy YES): 1 − no_bid IS the yes ask. Never derive from
   // 1 − no_ask — that's the yes BID, which understates cost by the full spread

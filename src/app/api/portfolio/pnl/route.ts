@@ -1,6 +1,16 @@
 import { NextResponse } from 'next/server'
 import { getSettings, getPredictions } from '@/lib/storage'
-import { getPortfolioBalance, getPortfolioPositions, getPortfolioSettlements, KalshiAuth } from '@/lib/kalshi'
+import {
+  getPortfolioBalance,
+  getPortfolioPositions,
+  getPortfolioSettlements,
+  fetchMarket,
+  positionSignedQuantity,
+  positionCostBasisDollars,
+  settlementProfitDollars,
+  KalshiAuth,
+} from '@/lib/kalshi'
+import { parseKalshiPrice } from '@/lib/scan'
 
 export const dynamic = 'force-dynamic'
 
@@ -100,39 +110,32 @@ export async function GET() {
       if (p.ticker) predByTicker.set(p.ticker, p)
     }
 
-    // Normalize a price field to dollars: Kalshi returns some price fields in
-    // cents — any value > 1 is treated as cents and divided by 100.
-    const normalizePrice = (v: any): number | null => {
-      if (v == null) return null
-      const n = Number(v)
-      if (!isFinite(n) || n < 0) return null
-      return n > 1 ? n / 100 : n
-    }
-
-    // Normalize open positions
+    // Normalize open positions. Kalshi's V2 GetPositions response does NOT
+    // embed a nested market object (no title, no live price) — only ticker +
+    // quantity/cost-basis fields. A separate fetchMarket() per ticker is
+    // required to get the human-readable title and a live quote for pricing.
     const rawPositions: any[] = positionsData.market_positions ?? positionsData.positions ?? []
-    const open_positions: OpenPosition[] = rawPositions.map((p: any) => {
-      const side: 'YES' | 'NO' = p.position > 0 ? 'YES' : 'NO'
-      const contracts = Math.abs(p.position ?? p.quantity ?? 0)
-      const avgPrice = p.total_traded != null && contracts > 0
-        ? Math.abs(p.total_traded) / contracts / 100
-        : 0
-      const yesPrice = normalizePrice(p.market?.yes_ask_dollars) ?? normalizePrice(p.yes_ask)
-      // NO positions are valued at (1 − yes price); fall back to avg price
+    const open_positions: OpenPosition[] = await Promise.all(rawPositions.map(async (p: any) => {
+      const signedQty = positionSignedQuantity(p)
+      const side: 'YES' | 'NO' = signedQty > 0 ? 'YES' : 'NO'
+      const contracts = Math.abs(signedQty)
+      const costBasis = positionCostBasisDollars(p)
+      const avgPrice = contracts > 0 ? costBasis / contracts : 0
+
+      // Live quote (best-effort — a fetch failure falls back to avg price
+      // rather than breaking the whole P&L page over one bad ticker).
+      const market = await fetchMarket(null, p.ticker).catch(() => null)
+      const yesAsk = market ? parseKalshiPrice(market.yes_ask_dollars, market.yes_ask) : 0
+      // NO positions are valued at (1 − yes ask); fall back to avg price
       // (already side-relative) when no live quote is available.
-      const currentPrice = yesPrice != null
-        ? (side === 'NO' ? 1 - yesPrice : yesPrice)
-        : avgPrice
+      const currentPrice = yesAsk > 0 ? (side === 'NO' ? 1 - yesAsk : yesAsk) : avgPrice
       const currentValue = contracts * currentPrice
-      const costBasis = contracts * avgPrice
-      const unrealized = p.unrealized_pnl != null
-        ? p.unrealized_pnl / 100
-        : currentValue - costBasis
+      const unrealized = currentValue - costBasis
       const pred = predByTicker.get(p.ticker)
 
       return {
         ticker: p.ticker,
-        market_title: p.market?.title ?? p.ticker,
+        market_title: market?.title ?? p.ticker,
         side,
         contracts,
         current_value: currentValue,
@@ -142,20 +145,27 @@ export async function GET() {
         current_price: currentPrice,
         category: pred?.category ?? '',
       }
-    })
+    }))
 
-    // Normalize settlements (last 20 for display, all for stats)
+    // Normalize settlements (last 20 for display, all for stats). Kalshi's
+    // V2 GetSettlements response has no `market_title` field — use the title
+    // recorded on our own logged prediction for this ticker instead (a
+    // settled market may not always be fetchable via the live markets
+    // endpoint the way an open one is). Profit comes from the shared
+    // settlementProfitDollars() helper — see its comment for the caveat that
+    // formula isn't yet verified against a live settled trade.
     const rawSettlements: any[] = settlementsData.settlements ?? []
     const allSettlements: Settlement[] = rawSettlements.map((s: any) => {
-      const revenue = (s.revenue ?? 0) / 100
-      const profit = (s.profit ?? 0) / 100
-      const cost = revenue - profit
       const ticker = s.market_ticker ?? s.ticker ?? ''
       const pred = predByTicker.get(ticker)
 
+      const revenue = (Number(s.revenue) || 0) / 100
+      const profit = settlementProfitDollars(s)
+      const cost = revenue - profit
+
       return {
         ticker,
-        title: s.market_title ?? ticker,
+        title: pred?.market_title ?? ticker,
         revenue,
         cost,
         profit,

@@ -1,6 +1,17 @@
 import { NextResponse } from 'next/server'
 import { getSettings, getSession } from '@/lib/storage'
-import { getPortfolioBalance, getPortfolioPositions, getPortfolioSettlements, KalshiAuth } from '@/lib/kalshi'
+import {
+  getPortfolioBalance,
+  getPortfolioPositions,
+  getPortfolioSettlements,
+  fetchMarket,
+  positionSignedQuantity,
+  positionCostBasisDollars,
+  positionRealizedPnlDollars,
+  settlementProfitDollars,
+  KalshiAuth,
+} from '@/lib/kalshi'
+import { parseKalshiPrice } from '@/lib/scan'
 
 export const dynamic = 'force-dynamic'
 
@@ -28,26 +39,29 @@ export async function GET() {
     const session = getSession()
     const sessionPosMap = new Map(session.positions.map((p) => [p.market, p]))
 
-    // Normalize positions
-    const positions = (balanceData.balance !== undefined
+    // Normalize positions. Kalshi's V2 GetPositions response has no nested
+    // market object (no title, no live price) — fetchMarket() per ticker
+    // supplies both.
+    const rawPositions = balanceData.balance !== undefined
       ? positionsData.market_positions ?? positionsData.positions ?? []
       : []
-    ).map((p: any) => {
+    const positions = await Promise.all(rawPositions.map(async (p: any) => {
       const sessionPos = sessionPosMap.get(p.ticker)
-      const side = p.position > 0 ? 'YES' : 'NO'
-      const qty = Math.abs(p.position ?? p.quantity ?? 0)
-      const avgPrice = p.total_traded != null && qty > 0
-        ? Math.abs(p.total_traded) / qty / 100  // Kalshi returns cents
-        : sessionPos?.avg_price ?? 0
-      const currentPrice = p.market?.yes_ask_dollars ?? p.yes_ask ?? avgPrice
-      const unrealizedPnl = p.unrealized_pnl != null
-        ? p.unrealized_pnl / 100  // cents to dollars
-        : (currentPrice - avgPrice) * qty
-      const realizedPnl = p.realized_pnl != null ? p.realized_pnl / 100 : 0
+      const signedQty = positionSignedQuantity(p)
+      const side = signedQty > 0 ? 'YES' : 'NO'
+      const qty = Math.abs(signedQty)
+      const costBasis = positionCostBasisDollars(p)
+      const avgPrice = qty > 0 ? costBasis / qty : sessionPos?.avg_price ?? 0
+
+      const market = await fetchMarket(null, p.ticker).catch(() => null)
+      const yesAsk = market ? parseKalshiPrice(market.yes_ask_dollars, market.yes_ask) : 0
+      const currentPrice = yesAsk > 0 ? (side === 'NO' ? 1 - yesAsk : yesAsk) : avgPrice
+      const unrealizedPnl = (currentPrice - avgPrice) * qty
+      const realizedPnl = positionRealizedPnlDollars(p)
 
       return {
         ticker: p.ticker,
-        market_title: p.market?.title ?? sessionPos?.market ?? p.ticker,
+        market_title: market?.title ?? sessionPos?.market ?? p.ticker,
         side,
         quantity: qty,
         avg_price: avgPrice,
@@ -58,14 +72,15 @@ export async function GET() {
         category: sessionPos?.category ?? '',
         notional: qty * currentPrice,
       }
-    })
+    }))
 
-    // Realized P&L from settlements
+    // Realized P&L from settlements. V2 has no market_title/profit fields —
+    // see settlementProfitDollars() for the computed-profit caveat.
     const settlements = (settlementsData.settlements ?? []).slice(0, 20).map((s: any) => ({
       ticker: s.market_ticker ?? s.ticker,
-      title: s.market_title ?? s.ticker,
-      revenue: (s.revenue ?? 0) / 100,
-      profit: (s.profit ?? 0) / 100,
+      title: sessionPosMap.get(s.market_ticker ?? s.ticker)?.market ?? s.market_ticker ?? s.ticker,
+      revenue: (Number(s.revenue) || 0) / 100,
+      profit: settlementProfitDollars(s),
       settled_at: s.created_time ?? s.settled_time,
     }))
 

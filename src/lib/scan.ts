@@ -288,7 +288,11 @@ export interface RunScanParams {
 
 export interface RunScanResult {
   opportunities: ScanOpportunity[]
-  screened_out: { ticker: string; title: string; reason: string }[]
+  // direction/edge_pct are set on code-generated entries (near-the-threshold
+  // effective-edge misses, which know Claude's recommended side and the
+  // computed edge) and absent on Claude's own screened_out entries (fairly-
+  // priced markets have no recommended side or computed edge).
+  screened_out: { ticker: string; title: string; reason: string; direction?: 'YES' | 'NO'; edge_pct?: number }[]
   session_notes: string
   markets_scanned: number
 }
@@ -610,7 +614,7 @@ export async function runScan(params: RunScanParams = {}): Promise<RunScanResult
 
   // Collect code-side rejections so an empty result is explainable in the UI
   // instead of a silent zero.
-  const codeScreened: { ticker: string; title: string; reason: string }[] = []
+  const codeScreened: { ticker: string; title: string; reason: string; direction?: 'YES' | 'NO'; edge_pct?: number }[] = []
 
   // Recompute effective edge in code: shrink Claude's estimate toward market
   // price, subtract Kalshi trading fee, filter weak signals.
@@ -691,6 +695,8 @@ export async function runScan(params: RunScanParams = {}): Promise<RunScanResult
         ticker: opp.ticker,
         title: opp.title,
         reason: `Effective edge ${opp.edge_pct.toFixed(1)}% after shrinkage+fees (needs ≥ ${(min_effective_edge * 100).toFixed(1)}%) — Claude said ${opp.direction} at ${opp.my_estimate_pct}% vs market ${Math.round((opp.yes_price ?? 0) * 100)}%`,
+        direction: opp.direction,
+        edge_pct: opp.edge_pct,
       })
     }
   }

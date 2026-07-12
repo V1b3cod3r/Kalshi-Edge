@@ -622,21 +622,43 @@ const WEATHER_CITIES: Array<{ match: string; label: string; lat: number; lon: nu
   { match: 'austin', label: 'Austin', lat: 30.27, lon: -97.74 },
   { match: 'denver', label: 'Denver', lat: 39.74, lon: -104.99 },
   { match: 'los angeles', label: 'Los Angeles', lat: 34.05, lon: -118.24 },
+  { match: 'lax', label: 'Los Angeles', lat: 34.05, lon: -118.24 },
   { match: 'philadelphia', label: 'Philadelphia', lat: 39.95, lon: -75.17 },
   { match: 'houston', label: 'Houston', lat: 29.76, lon: -95.37 },
 ]
 
+// Kalshi's daily temperature-high/low markets use ticker codes shaped like
+// KXTEMP<CITY><H|L> (e.g. KXTEMPNYCH, KXTEMPLAXH) — an exact, unambiguous city
+// signal, unlike guessing from however the title happens to phrase the city
+// name. Populated only with codes actually observed in the wild; add more as
+// they're confirmed rather than guessing unverified station codes.
+const TEMP_TICKER_CITY_CODES: Record<string, { label: string; lat: number; lon: number }> = {
+  NYC: { label: 'New York', lat: 40.71, lon: -74.01 },
+  LAX: { label: 'Los Angeles', lat: 34.05, lon: -118.24 },
+}
+
 /**
- * NWS 7-day weather forecast for the city named in the market title.
- * Uses the free National Weather Service API (no key required).
- * Returns '' if the title doesn't name a known market city — never sends
- * one city's forecast for another city's market.
+ * NWS 7-day weather forecast for the market's city. Uses the free National
+ * Weather Service API (no key required). Prefers the city code embedded in a
+ * KXTEMP<CITY><H|L> ticker (exact) and falls back to matching a known city
+ * name inside the title text. Returns '' if neither source names a known
+ * city — never sends one city's forecast for another city's market.
  */
-export async function nwsWeatherSignal(marketTitle?: string): Promise<string> {
+export async function nwsWeatherSignal(marketTitle?: string, ticker?: string): Promise<string> {
   try {
-    if (!marketTitle) return ''
-    const titleLower = marketTitle.toLowerCase()
-    const city = WEATHER_CITIES.find((c) => titleLower.includes(c.match))
+    let city: { label: string; lat: number; lon: number } | undefined
+
+    if (ticker) {
+      const series = ticker.split('-')[0] // e.g. KXTEMPNYCH-26JUL1207-T74.99 → KXTEMPNYCH
+      const m = series.match(/^KXTEMP([A-Z]+)[HL]$/)
+      if (m) city = TEMP_TICKER_CITY_CODES[m[1]]
+    }
+
+    if (!city && marketTitle) {
+      const titleLower = marketTitle.toLowerCase()
+      city = WEATHER_CITIES.find((c) => titleLower.includes(c.match))
+    }
+
     if (!city) return ''
 
     const pointsUrl = `https://api.weather.gov/points/${city.lat},${city.lon}`
@@ -715,7 +737,10 @@ function isCpiTitle(title: string): boolean {
 
 /** Returns true if the market title is weather related */
 function isWeatherTitle(title: string): boolean {
-  return /\b(temperature|precip|precipitation|weather|rain|snow|storm|hurricane|tornado|flood)\b/i.test(title)
+  // Was missing "temp" — Kalshi commonly abbreviates "temperature" as "temp"
+  // in market titles, which the whole-word "temperature" match never caught,
+  // silently starving these markets of any NWS forecast data.
+  return /\b(temp|temperature|precip|precipitation|weather|rain|snow|storm|hurricane|tornado|flood)\b/i.test(title)
 }
 
 /**
@@ -770,9 +795,12 @@ export async function getSignalsForMarket(
       const [spx, dxy] = await Promise.all([spxSignals(), dxySignal()])
       return [...spx, ...dxy]
     }
-    // Weather markets: NWS forecast
-    if (marketTitle && isWeatherTitle(marketTitle)) {
-      const wx = await nwsWeatherSignal(marketTitle)
+    // Weather markets: NWS forecast. Check the ticker prefix FIRST — Kalshi's
+    // KXTEMP<CITY><H|L> tickers are an exact, unambiguous weather signal,
+    // unlike the title-word heuristic below (which depends on the title
+    // happening to say "temp"/"weather"/etc. and can silently miss).
+    if (series.startsWith('KXTEMP') || (marketTitle && isWeatherTitle(marketTitle))) {
+      const wx = await nwsWeatherSignal(marketTitle, ticker)
       if (wx) {
         return [{ label: 'NWS Weather Forecast', value: '', note: wx, source: 'National Weather Service' }]
       }

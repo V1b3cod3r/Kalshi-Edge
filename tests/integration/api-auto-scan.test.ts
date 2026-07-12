@@ -341,6 +341,46 @@ describe('POST /api/auto-scan', () => {
     const screened = data.screened_out.find((s: any) => s.ticker === 'WEAK')
     expect(screened).toBeDefined()
     expect(screened.reason).toContain('Effective edge')
+    // Regression: near-miss entries carry the real direction/edge as fields
+    // (not just embedded in the reason text) so downstream consumers like the
+    // autopilot decision log don't have to parse prose to render Side/Edge.
+    expect(screened.direction).toBe('YES')
+    expect(typeof screened.edge_pct).toBe('number')
+  })
+
+  it('carries direction NO on a near-miss when Claude recommended NO', async () => {
+    const { saveSettings, getSettings } = await import('@/lib/storage')
+    const settings = getSettings()
+    settings.kalshi_api_key = 'kx-test-key'
+    settings.anthropic_api_key = 'sk-ant-test-key'
+    saveSettings(settings)
+
+    mockKalshiMarkets([
+      { ticker: 'NOCASE', title: 'A NO-direction market', yes_ask: 60, yes_bid: 58, volume_24h: 5000 },
+    ])
+    // p_shrunk = 0.6×0.60 + 0.4×0.55 = 0.58; NO ask (derived) = 1−0.58 = 0.42
+    // raw_edge = (1−0.58) − 0.42 = 0.00; minus fee (~1.7%) → below the 2.5%
+    // threshold, so this is a screened-out NEAR MISS on the NO side.
+    const scanJson = JSON.stringify({
+      opportunities: [{
+        ticker: 'NOCASE', title: 'A NO-direction market', direction: 'NO',
+        my_estimate_pct: 55, market_price_pct: 60, edge_pct: 10, score: 40,
+        rationale: 'r', key_risk: 'k', flags: [], confidence: 'MEDIUM',
+      }],
+      screened_out: [], session_notes: '',
+    })
+    mockCreate.mockResolvedValue({ content: [{ type: 'text', text: scanJson }] })
+
+    vi.resetModules()
+    const { POST } = await import('@/app/api/auto-scan/route')
+
+    const req = makeRequest({ limit: 15 })
+    const res = await POST(req)
+    const data = await res.json()
+
+    const screened = data.screened_out.find((s: any) => s.ticker === 'NOCASE')
+    expect(screened).toBeDefined()
+    expect(screened.direction).toBe('NO')
   })
 
   it('screens out opportunities whose ticker matches no scanned market', async () => {

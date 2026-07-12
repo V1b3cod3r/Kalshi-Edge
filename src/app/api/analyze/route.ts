@@ -89,7 +89,9 @@ export async function POST(req: NextRequest) {
 
     // Fetch real-time signals + web context in parallel (best-effort, never blocks)
     const [signals, webContext] = await Promise.all([
-      getSignalsForMarket(market.id ?? '', market.id?.split('-')[0]),
+      // marketTitle was never passed here — the title-text weather/CPI
+      // detection fallbacks had nothing to check on this route at all.
+      getSignalsForMarket(market.id ?? '', market.id?.split('-')[0], market.title),
       getMarketWebContext(market.title, settings.tavily_api_key || undefined),
     ])
 

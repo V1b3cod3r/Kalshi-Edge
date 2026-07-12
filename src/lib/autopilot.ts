@@ -449,11 +449,15 @@ export async function runAutopilotCycle(): Promise<AutopilotReport> {
         report.trades.push({
           ticker: nm.ticker,
           title: nm.title,
-          side: 'yes',
+          // Was hardcoded 'yes' regardless of Claude's actual call — the Side
+          // column showed YES even when the reason text said "Claude said NO".
+          side: nm.direction === 'NO' ? 'no' : 'yes',
           contracts: 0,
           price: 0,
           cost: 0,
-          effective_edge_pct: 0,
+          // Was hardcoded 0 — the Edge column showed 0.0% even when the reason
+          // text described a clearly negative effective edge.
+          effective_edge_pct: nm.edge_pct ?? 0,
           kelly_stake: 0,
           executed: false,
           skip_reason: `Near miss — ${nm.reason}`,

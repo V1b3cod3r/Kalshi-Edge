@@ -277,8 +277,8 @@ describe('V2 order translation (__toV2OrderBody) — REAL MONEY, direction-criti
     const { __toV2OrderBody } = await import('@/lib/kalshi')
     const body = __toV2OrderBody({ ticker: 'T', side: 'yes', action: 'buy', count: 3, price_cents: 45 })
     expect(body.side).toBe('bid')
-    expect(body.price).toBe(0.45)
-    expect(body.count).toBe(3)
+    expect(body.price).toBe('0.45')
+    expect(body.count).toBe('3')
     expect(body.ticker).toBe('T')
   })
 
@@ -286,21 +286,32 @@ describe('V2 order translation (__toV2OrderBody) — REAL MONEY, direction-criti
     const { __toV2OrderBody } = await import('@/lib/kalshi')
     const body = __toV2OrderBody({ ticker: 'T', side: 'yes', action: 'sell', count: 1, price_cents: 45 })
     expect(body.side).toBe('ask')
-    expect(body.price).toBe(0.45)
+    expect(body.price).toBe('0.45')
   })
 
   it('buy NO @ 60¢ → ask on YES at $0.40 (buy NO ≡ sell YES at inverse price)', async () => {
     const { __toV2OrderBody } = await import('@/lib/kalshi')
     const body = __toV2OrderBody({ ticker: 'T', side: 'no', action: 'buy', count: 2, price_cents: 60 })
     expect(body.side).toBe('ask')
-    expect(body.price).toBe(0.40) // 1 − 0.60, computed in cents to avoid float drift
+    expect(body.price).toBe('0.40') // 1 − 0.60, computed in cents to avoid float drift
   })
 
   it('sell NO @ 60¢ → bid on YES at $0.40 (sell NO ≡ buy YES at inverse price)', async () => {
     const { __toV2OrderBody } = await import('@/lib/kalshi')
     const body = __toV2OrderBody({ ticker: 'T', side: 'no', action: 'sell', count: 1, price_cents: 60 })
     expect(body.side).toBe('bid')
-    expect(body.price).toBe(0.40)
+    expect(body.price).toBe('0.40')
+  })
+
+  it('sends count and price as JSON strings, per the Kalshi V2 Go struct (Decimal fields)', async () => {
+    // Regression: a live 400 confirmed the server rejects a JSON number here —
+    // "cannot unmarshal number into Go struct field ...count of type string".
+    const { __toV2OrderBody } = await import('@/lib/kalshi')
+    const body = __toV2OrderBody({ ticker: 'T', side: 'yes', count: 5, price_cents: 45 })
+    expect(typeof body.count).toBe('string')
+    expect(typeof body.price).toBe('string')
+    expect(body.count).toBe('5')
+    expect(body.price).toBe('0.45')
   })
 
   it('defaults action to buy when omitted', async () => {

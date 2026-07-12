@@ -253,8 +253,12 @@ function toV2OrderBody(req: PlaceOrderRequest): Record<string, any> {
     ticker: req.ticker,
     client_order_id: req.client_order_id ?? randomUUID(),
     side: bookSide,
-    count: req.count,
-    price: Number((yesPriceCents / 100).toFixed(2)), // dollars, penny-granular
+    // Confirmed by a live 400: the Go backend unmarshals these into a Decimal
+    // struct field typed as string, not a JSON number ("cannot unmarshal
+    // number into Go struct field CreateOrderV2Request.count of type string").
+    // price gets the same treatment on the same struct — send both as strings.
+    count: String(req.count),
+    price: (yesPriceCents / 100).toFixed(2), // dollars, penny-granular, as string
     time_in_force: req.expiration_ts ? 'immediate_or_cancel' : 'good_till_canceled',
   }
   return body

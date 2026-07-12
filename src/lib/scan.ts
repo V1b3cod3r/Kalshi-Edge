@@ -437,7 +437,7 @@ export async function runScan(params: RunScanParams = {}): Promise<RunScanResult
   // long-dated markets tie up capital for years per point of edge and their
   // predictions never resolve fast enough to validate the model. Undated
   // markets pass through uncapped (can't judge a horizon that isn't there).
-  const withinHorizon = max_days_to_resolution
+  const withinHorizonCapped = max_days_to_resolution
     ? unexpired.filter((m) => {
         if (!m.resolution_date) return true
         const ts = Date.parse(m.resolution_date)
@@ -446,6 +446,28 @@ export async function runScan(params: RunScanParams = {}): Promise<RunScanResult
         return days <= max_days_to_resolution
       })
     : unexpired
+
+  // Fail-open: a live run showed this cap eliminating 100% of a 3000-market
+  // pool (0 markets "resolving within 45d" out of 3000 unexpired). Whatever
+  // the cause — Kalshi's resolution_date/close_time possibly reflecting a
+  // series-level date rather than the specific dated market's actual
+  // resolution, or a status-probe bias in which markets got fetched — a
+  // horizon filter that zeroes out an entire non-empty pool isn't
+  // discriminating the way it's meant to. Don't let a mis-calibrated filter
+  // break every scan; fall back to the uncapped pool and say so visibly
+  // (both server log and session_notes) instead of silently returning zero.
+  let horizonFallbackNote = ''
+  const withinHorizon =
+    max_days_to_resolution && withinHorizonCapped.length === 0 && unexpired.length > 0
+      ? (() => {
+          horizonFallbackNote =
+            `Note: the ${max_days_to_resolution}-day resolution horizon filter would have excluded ` +
+            `all ${unexpired.length} available markets, so it was skipped for this scan — Kalshi's ` +
+            `reported resolution dates may not reflect actual settlement timing for these markets.`
+          console.warn(`[scan] ${horizonFallbackNote}`)
+          return unexpired
+        })()
+      : withinHorizonCapped
 
   // Remove near-certain markets (no edge at extremes)
   const midRange = withinHorizon.filter((m) => m.yes_price >= 0.03 && m.yes_price <= 0.97)
@@ -472,7 +494,11 @@ export async function runScan(params: RunScanParams = {}): Promise<RunScanResult
     const funnel =
       `${rawMarkets.length} fetched → ${quoted.length} with live two-sided quotes → ` +
       `${unexpired.length} unexpired` +
-      (max_days_to_resolution ? ` → ${withinHorizon.length} resolving within ${max_days_to_resolution}d` : '') +
+      (max_days_to_resolution
+        ? horizonFallbackNote
+          ? ` → ${withinHorizonCapped.length} resolving within ${max_days_to_resolution}d (0 — horizon filter skipped, fell back to all ${withinHorizon.length})`
+          : ` → ${withinHorizon.length} resolving within ${max_days_to_resolution}d`
+        : '') +
       ` → ${midRange.length} priced 3–97¢` +
       (category && category !== 'All' ? ` → ${inCategory.length} in "${category}"` : '') +
       ` → ${aboveVolume.length} above $${min_volume} volume (highest seen: $${maxVol.toFixed(0)})`
@@ -739,7 +765,7 @@ export async function runScan(params: RunScanParams = {}): Promise<RunScanResult
   const result = {
     opportunities,
     screened_out: [...codeScreened, ...(scanResult.screened_out || [])],
-    session_notes: scanResult.session_notes || '',
+    session_notes: [horizonFallbackNote, scanResult.session_notes || ''].filter(Boolean).join(' '),
     markets_scanned: normalized.length,
   }
 

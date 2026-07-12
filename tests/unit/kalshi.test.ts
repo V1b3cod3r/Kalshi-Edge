@@ -264,3 +264,85 @@ describe('fetchWithRetry (network resilience)', () => {
     expect(fetchMock).toHaveBeenCalledTimes(3)
   })
 })
+
+describe('V2 order translation (__toV2OrderBody) — REAL MONEY, direction-critical', () => {
+  beforeEach(() => { vi.resetModules() })
+
+  // The four side×action combinations must map to the correct YES-book side and
+  // price. A single wrong bid/ask flips a buy into a sell; a wrong price
+  // inversion trades at the wrong level. These are the tests that must never
+  // silently break.
+
+  it('buy YES @ 45¢ → bid on YES at $0.45', async () => {
+    const { __toV2OrderBody } = await import('@/lib/kalshi')
+    const body = __toV2OrderBody({ ticker: 'T', side: 'yes', action: 'buy', count: 3, price_cents: 45 })
+    expect(body.side).toBe('bid')
+    expect(body.price).toBe(0.45)
+    expect(body.count).toBe(3)
+    expect(body.ticker).toBe('T')
+  })
+
+  it('sell YES @ 45¢ → ask on YES at $0.45', async () => {
+    const { __toV2OrderBody } = await import('@/lib/kalshi')
+    const body = __toV2OrderBody({ ticker: 'T', side: 'yes', action: 'sell', count: 1, price_cents: 45 })
+    expect(body.side).toBe('ask')
+    expect(body.price).toBe(0.45)
+  })
+
+  it('buy NO @ 60¢ → ask on YES at $0.40 (buy NO ≡ sell YES at inverse price)', async () => {
+    const { __toV2OrderBody } = await import('@/lib/kalshi')
+    const body = __toV2OrderBody({ ticker: 'T', side: 'no', action: 'buy', count: 2, price_cents: 60 })
+    expect(body.side).toBe('ask')
+    expect(body.price).toBe(0.40) // 1 − 0.60, computed in cents to avoid float drift
+  })
+
+  it('sell NO @ 60¢ → bid on YES at $0.40 (sell NO ≡ buy YES at inverse price)', async () => {
+    const { __toV2OrderBody } = await import('@/lib/kalshi')
+    const body = __toV2OrderBody({ ticker: 'T', side: 'no', action: 'sell', count: 1, price_cents: 60 })
+    expect(body.side).toBe('bid')
+    expect(body.price).toBe(0.40)
+  })
+
+  it('defaults action to buy when omitted', async () => {
+    const { __toV2OrderBody } = await import('@/lib/kalshi')
+    const body = __toV2OrderBody({ ticker: 'T', side: 'yes', count: 1, price_cents: 30 })
+    expect(body.side).toBe('bid')
+  })
+
+  it('maps expiration_ts → immediate_or_cancel, otherwise good_till_canceled', async () => {
+    const { __toV2OrderBody } = await import('@/lib/kalshi')
+    const ioc = __toV2OrderBody({ ticker: 'T', side: 'yes', count: 1, price_cents: 50, expiration_ts: 123 })
+    expect(ioc.time_in_force).toBe('immediate_or_cancel')
+    const gtc = __toV2OrderBody({ ticker: 'T', side: 'yes', count: 1, price_cents: 50 })
+    expect(gtc.time_in_force).toBe('good_till_canceled')
+  })
+
+  it('never emits the deprecated v1 fields (action/type/yes_price/no_price)', async () => {
+    const { __toV2OrderBody } = await import('@/lib/kalshi')
+    const body = __toV2OrderBody({ ticker: 'T', side: 'no', action: 'buy', count: 1, price_cents: 60 })
+    expect(body).not.toHaveProperty('action')
+    expect(body).not.toHaveProperty('type')
+    expect(body).not.toHaveProperty('yes_price')
+    expect(body).not.toHaveProperty('no_price')
+    // client_order_id must be present (idempotency key)
+    expect(typeof body.client_order_id).toBe('string')
+    expect(body.client_order_id.length).toBeGreaterThan(0)
+  })
+
+  it('posts to the V2 /portfolio/events/orders endpoint, not the deprecated path', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ order: { order_id: 'o1', status: 'resting' } }),
+      text: () => Promise.resolve(''),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { placeOrder } = await import('@/lib/kalshi')
+    await placeOrder(TEST_AUTH, { ticker: 'T', side: 'yes', action: 'buy', count: 1, price_cents: 50 })
+
+    const calledUrl = fetchMock.mock.calls[0][0]
+    expect(calledUrl).toContain('/portfolio/events/orders')
+    expect(calledUrl).not.toMatch(/\/portfolio\/orders(\?|$)/)
+  })
+})

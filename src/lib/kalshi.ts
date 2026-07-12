@@ -1,4 +1,4 @@
-import { createSign, createPrivateKey, constants } from 'crypto'
+import { createSign, createPrivateKey, constants, randomUUID } from 'crypto'
 
 const KALSHI_BASE_URL = 'https://api.elections.kalshi.com/trade-api/v2'
 const PATH_PREFIX = '/trade-api/v2'
@@ -223,33 +223,53 @@ export interface PlaceOrderResult {
   created_time: string
 }
 
+// Translate this app's (side: yes|no, action: buy|sell, price in cents) model to
+// a Kalshi V2 order and POST it. The old /portfolio/orders create endpoint was
+// deprecated (HTTP 410 deprecated_v1_order_endpoint); V2 lives at
+// /portfolio/events/orders and speaks a different language:
+//   - The orderbook is expressed on the YES leg only. side "bid" = buy YES,
+//     side "ask" = sell YES.
+//   - Buying/selling NO is the economic inverse of selling/buying YES at the
+//     complementary price: buy NO @ q  ≡  sell YES @ (1−q). Kalshi documents
+//     that "there is no inherent difference between buying YES and selling NO."
+//   - price is a single field in DOLLARS (0.65), not yes_price/no_price in cents.
+//   - client_order_id must be a UUID (also the idempotency key — a repeated id
+//     returns the original order rather than double-filling).
+//   - time_in_force replaces expiration_ts. Callers that passed expiration_ts
+//     wanted "fill now, don't linger" → immediate_or_cancel; others rest as
+//     good_till_canceled.
+function toV2OrderBody(req: PlaceOrderRequest): Record<string, any> {
+  const isBuy = (req.action ?? 'buy') === 'buy'
+
+  // Everything is quoted on the YES book. Compute the equivalent YES price in
+  // integer cents first (exact), then convert to dollars — avoids float drift
+  // like 1 − 0.6 ≠ 0.4.
+  const yesPriceCents = req.side === 'yes' ? req.price_cents : 100 - req.price_cents
+
+  // bid when (buy YES) or (sell NO); ask when (sell YES) or (buy NO).
+  const bookSide: 'bid' | 'ask' = (req.side === 'yes') === isBuy ? 'bid' : 'ask'
+
+  const body: Record<string, any> = {
+    ticker: req.ticker,
+    client_order_id: req.client_order_id ?? randomUUID(),
+    side: bookSide,
+    count: req.count,
+    price: Number((yesPriceCents / 100).toFixed(2)), // dollars, penny-granular
+    time_in_force: req.expiration_ts ? 'immediate_or_cancel' : 'good_till_canceled',
+  }
+  return body
+}
+
 export async function placeOrder(
   auth: KalshiAuth,
   req: PlaceOrderRequest
 ): Promise<PlaceOrderResult> {
-  const urlPath = `${PATH_PREFIX}/portfolio/orders`
-  const body: Record<string, any> = {
-    action: req.action ?? 'buy',
-    type: 'limit',
-    ticker: req.ticker,
-    side: req.side,
-    count: req.count,
-    client_order_id: req.client_order_id ?? `ke-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-  }
-
-  if (req.side === 'yes') {
-    body.yes_price = req.price_cents
-  } else {
-    body.no_price = req.price_cents
-  }
-
-  if (req.expiration_ts) {
-    body.expiration_ts = req.expiration_ts
-  }
+  const urlPath = `${PATH_PREFIX}/portfolio/events/orders`
+  const body = toV2OrderBody(req)
 
   const headers = getSignedHeaders(auth, 'POST', urlPath)
 
-  const res = await fetchWithRetry(`${KALSHI_BASE_URL}/portfolio/orders`, {
+  const res = await fetchWithRetry(`${KALSHI_BASE_URL}/portfolio/events/orders`, {
     method: 'POST',
     headers,
     body: JSON.stringify(body),
@@ -263,15 +283,19 @@ export async function placeOrder(
   const data = await res.json()
   const o = data.order || data
   return {
-    order_id: o.order_id,
+    order_id: o.order_id ?? o.id ?? o.client_order_id,
     status: o.status,
-    ticker: o.ticker,
-    side: o.side,
-    count: o.count,
-    yes_price: o.yes_price,
-    created_time: o.created_time,
+    ticker: o.ticker ?? req.ticker,
+    side: o.side ?? req.side,
+    count: Number(o.count ?? req.count),
+    yes_price: o.yes_price ?? o.price,
+    created_time: o.created_time ?? o.created_ts ?? new Date().toISOString(),
   }
 }
+
+// Exported for unit testing the V1→V2 order translation (the bid/ask + inverse-
+// price mapping is real-money-critical and must be locked down by tests).
+export const __toV2OrderBody = toV2OrderBody
 
 // Resting (unfilled/partially-filled) orders — used to reconcile stale orders
 // left over from a prior cycle before placing new ones.

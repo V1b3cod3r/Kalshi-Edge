@@ -260,6 +260,12 @@ function toV2OrderBody(req: PlaceOrderRequest): Record<string, any> {
     count: String(req.count),
     price: (yesPriceCents / 100).toFixed(2), // dollars, penny-granular, as string
     time_in_force: req.expiration_ts ? 'immediate_or_cancel' : 'good_till_canceled',
+    // Confirmed required by a live 400 (Go 'required' validation tag). Two
+    // options exist: "taker_at_cross" cancels OUR incoming order if it would
+    // cross our own resting order; "maker" cancels the resting one instead.
+    // taker_at_cross is the documented default and the safer choice for an
+    // automated system — it never touches an order already resting/working.
+    self_trade_prevention_type: 'taker_at_cross',
   }
   return body
 }

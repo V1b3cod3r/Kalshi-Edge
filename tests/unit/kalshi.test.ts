@@ -328,6 +328,12 @@ describe('V2 order translation (__toV2OrderBody) — REAL MONEY, direction-criti
     expect(gtc.time_in_force).toBe('good_till_canceled')
   })
 
+  it('always includes self_trade_prevention_type (confirmed required by a live 400)', async () => {
+    const { __toV2OrderBody } = await import('@/lib/kalshi')
+    const body = __toV2OrderBody({ ticker: 'T', side: 'yes', count: 1, price_cents: 50 })
+    expect(body.self_trade_prevention_type).toBe('taker_at_cross')
+  })
+
   it('never emits the deprecated v1 fields (action/type/yes_price/no_price)', async () => {
     const { __toV2OrderBody } = await import('@/lib/kalshi')
     const body = __toV2OrderBody({ ticker: 'T', side: 'no', action: 'buy', count: 1, price_cents: 60 })

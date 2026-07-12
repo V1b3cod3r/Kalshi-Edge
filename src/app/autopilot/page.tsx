@@ -358,6 +358,7 @@ export default function AutopilotPage() {
       scan_limit: form.scan_limit,
       max_days_to_resolution: form.max_days_to_resolution,
       min_resolved_predictions_for_live: form.min_resolved_predictions_for_live,
+      require_calibration_to_go_live: form.require_calibration_to_go_live,
     })
     if (ok) showToast('Guardrails saved', 'success')
   }
@@ -680,6 +681,29 @@ export default function AutopilotPage() {
             <label style={labelStyle}>Resolved preds required for live</label>
             <input type="number" min={0} max={500} value={form.min_resolved_predictions_for_live}
               onChange={(e) => setForm({ ...form, min_resolved_predictions_for_live: parseInt(e.target.value) || 0 })} style={inputStyle} />
+          </div>
+
+          {/* Go-live calibration gate — off by default per explicit user request.
+              Kept as a toggle (not deleted) so it can be turned back on. */}
+          <div className="col-span-2 md:col-span-3 mt-2 pt-4" style={{ borderTop: '1px solid #2a2a3e' }}>
+            <div className="flex items-center justify-between">
+              <div>
+                <label style={{ ...labelStyle, marginBottom: '2px', color: form.require_calibration_to_go_live ? '#94a3b8' : '#ef4444' }}>
+                  Require proven edge before live trades
+                </label>
+                <p className="text-xs" style={{ color: '#64748b' }}>
+                  When ON, live orders are blocked until the "Resolved preds required for live" count is met AND
+                  Claude's Brier score beats the market's. When OFF, autopilot can place real orders with{' '}
+                  <strong style={{ color: '#ef4444' }}>zero evidence it has any edge</strong> — recommended only
+                  once you understand and accept that risk.
+                </p>
+              </div>
+              <Toggle
+                on={form.require_calibration_to_go_live}
+                onClick={() => setForm({ ...form, require_calibration_to_go_live: !form.require_calibration_to_go_live })}
+                color="#ef4444"
+              />
+            </div>
           </div>
           <div className="col-span-2 md:col-span-3">
             <label style={labelStyle}>Category blacklist (comma-separated)</label>

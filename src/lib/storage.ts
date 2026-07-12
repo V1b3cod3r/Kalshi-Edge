@@ -48,6 +48,8 @@ const DEFAULT_AUTOPILOT: AutopilotSettings = {
   scan_limit: 40,
   max_days_to_resolution: 45,
   min_resolved_predictions_for_live: 30,
+  // Off at the user's explicit request — see AutopilotSettings comment.
+  require_calibration_to_go_live: false,
 }
 
 const DEFAULT_SETTINGS: AppSettings = {

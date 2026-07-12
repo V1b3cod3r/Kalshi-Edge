@@ -160,25 +160,26 @@ export async function runAutopilotCycle(): Promise<AutopilotReport> {
       privateKey: settings.kalshi_private_key,
     }
 
-    // GO-LIVE GATE: never place a REAL order until this account's own
-    // calibration history shows Claude actually beats the market's Brier
-    // score over a large enough resolved sample. Dry-run is exempt — dry-run
-    // is how that history accumulates in the first place. Mirrors the
-    // circuit-breaker pattern below: a hard, code-enforced halt rather than a
-    // suggestion.
+    // GO-LIVE GATE (optional — off by default per user setting): when
+    // enabled, never place a REAL order until this account's own calibration
+    // history shows Claude actually beats the market's Brier score over a
+    // large enough resolved sample. Dry-run is always exempt — dry-run is how
+    // that history accumulates in the first place.
     if (!ap.dry_run) {
-      const calibration = getCalibrationStats()
-      const required = ap.min_resolved_predictions_for_live
-      const enoughSamples = calibration.resolved_predictions >= required
-      const beatsMarket = calibration.market_brier != null && calibration.claude_brier < calibration.market_brier
-      if (!enoughSamples || !beatsMarket) {
-        report.status = 'halted'
-        report.halted = !enoughSamples
-          ? `Live trading gate not met: only ${calibration.resolved_predictions}/${required} predictions have resolved. Switch to dry-run and keep scanning until enough history accumulates.`
-          : `Live trading gate not met: Claude Brier ${calibration.claude_brier.toFixed(3)} does not beat market Brier ${calibration.market_brier!.toFixed(3)} over ${calibration.resolved_predictions} resolved predictions. The model is not demonstrably better than the market yet — switch back to dry-run.`
-        report.finished_at = new Date().toISOString()
-        appendAutopilotRun(report)
-        return report
+      if (ap.require_calibration_to_go_live) {
+        const calibration = getCalibrationStats()
+        const required = ap.min_resolved_predictions_for_live
+        const enoughSamples = calibration.resolved_predictions >= required
+        const beatsMarket = calibration.market_brier != null && calibration.claude_brier < calibration.market_brier
+        if (!enoughSamples || !beatsMarket) {
+          report.status = 'halted'
+          report.halted = !enoughSamples
+            ? `Live trading gate not met: only ${calibration.resolved_predictions}/${required} predictions have resolved. Switch to dry-run and keep scanning until enough history accumulates.`
+            : `Live trading gate not met: Claude Brier ${calibration.claude_brier.toFixed(3)} does not beat market Brier ${calibration.market_brier!.toFixed(3)} over ${calibration.resolved_predictions} resolved predictions. The model is not demonstrably better than the market yet — switch back to dry-run.`
+          report.finished_at = new Date().toISOString()
+          appendAutopilotRun(report)
+          return report
+        }
       }
       // Best-effort: clear out anything left resting from a prior cycle
       // before this cycle's balance/exposure snapshot is taken.

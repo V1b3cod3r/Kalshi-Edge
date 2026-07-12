@@ -88,6 +88,12 @@ export interface AutopilotSettings {
   stop_loss_pct: number            // default 50 — sell when position down >= this % of entry cost
   max_days_to_resolution: number   // default 45 — skip markets resolving further out than this (capital velocity + faster calibration feedback)
   min_resolved_predictions_for_live: number // default 30 — live orders blocked until this many predictions have resolved AND Claude beats the market's Brier score on this history
+  // default false — at the user's explicit request, live trading is NOT
+  // gated on calibration history. When true, restores the check above.
+  // NOTE: with this off, autopilot can place real orders with zero evidence
+  // it has any edge over the market. Left as a setting (not deleted) so it
+  // can be turned back on without reconstructing the logic.
+  require_calibration_to_go_live: boolean
 }
 
 export interface AppSettings {

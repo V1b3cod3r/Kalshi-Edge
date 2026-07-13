@@ -137,6 +137,11 @@ interface FetchMarketsParams {
   // The reliable way to exclude settled/expired markets regardless of the
   // status param's mood.
   min_close_ts?: number
+  // Only markets whose close_time is at/before this Unix timestamp (seconds).
+  // Critical for the autopilot's resolution horizon: without it, the paginated
+  // fetch (capped at MAX_PAGES) fills up with far-dated markets and this
+  // week's markets may never enter the pool at all.
+  max_close_ts?: number
 }
 
 // Market read endpoints are public — no auth required.
@@ -156,6 +161,7 @@ export async function fetchMarkets(
     if (params.category) url.searchParams.set('category', params.category)
     if (params.search) url.searchParams.set('search', params.search)
     if (params.min_close_ts) url.searchParams.set('min_close_ts', String(params.min_close_ts))
+    if (params.max_close_ts) url.searchParams.set('max_close_ts', String(params.max_close_ts))
   }
 
   const headers: Record<string, string> =

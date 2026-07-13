@@ -341,6 +341,16 @@ export async function runScan(params: RunScanParams = {}): Promise<RunScanResult
   // min_close_ts excludes settled/expired markets by time, independent of the
   // status param — the reliable backstop when status filtering misbehaves.
   const minCloseTs = Math.floor(Date.now() / 1000)
+  // When a resolution horizon is set (autopilot), constrain the FETCH itself,
+  // not just the post-filter: Kalshi has far more open markets than the
+  // MAX_PAGES pagination cap can hold, and without max_close_ts the pool can
+  // fill entirely with far-dated markets — a live incident saw autopilot's
+  // 45-day cap face a 3000-market pool containing zero near-dated markets,
+  // and (with the then fail-open behavior) buy contracts resolving in
+  // 2029-2035. Belt (this) and suspenders (the post-filter below).
+  const maxCloseTs = max_days_to_resolution
+    ? minCloseTs + Math.ceil(max_days_to_resolution * 86400)
+    : undefined
 
   // Kalshi's GetMarkets status filter is inconsistent: some deployments accept
   // 'open', others 'active', and a wrong value returns an empty 200 rather
@@ -353,6 +363,7 @@ export async function runScan(params: RunScanParams = {}): Promise<RunScanResult
     const res = await fetchMarkets(null, {
       ...(candidate ? { status: candidate } : {}),
       min_close_ts: minCloseTs,
+      ...(maxCloseTs ? { max_close_ts: maxCloseTs } : {}),
       limit: 200,
     }).catch((err) => {
       // Record the failure instead of swallowing it — an all-candidates
@@ -394,6 +405,7 @@ export async function runScan(params: RunScanParams = {}): Promise<RunScanResult
       const next = await fetchMarkets(null, {
         ...(statusParam ? { status: statusParam } : {}),
         min_close_ts: minCloseTs,
+        ...(maxCloseTs ? { max_close_ts: maxCloseTs } : {}),
         limit: 200,
         cursor,
       }).catch((err) => {
@@ -449,27 +461,24 @@ export async function runScan(params: RunScanParams = {}): Promise<RunScanResult
       })
     : unexpired
 
-  // Fail-open: a live run showed this cap eliminating 100% of a 3000-market
-  // pool (0 markets "resolving within 45d" out of 3000 unexpired). Whatever
-  // the cause — Kalshi's resolution_date/close_time possibly reflecting a
-  // series-level date rather than the specific dated market's actual
-  // resolution, or a status-probe bias in which markets got fetched — a
-  // horizon filter that zeroes out an entire non-empty pool isn't
-  // discriminating the way it's meant to. Don't let a mis-calibrated filter
-  // break every scan; fall back to the uncapped pool and say so visibly
-  // (both server log and session_notes) instead of silently returning zero.
-  let horizonFallbackNote = ''
-  const withinHorizon =
-    max_days_to_resolution && withinHorizonCapped.length === 0 && unexpired.length > 0
-      ? (() => {
-          horizonFallbackNote =
-            `Note: the ${max_days_to_resolution}-day resolution horizon filter would have excluded ` +
-            `all ${unexpired.length} available markets, so it was skipped for this scan — Kalshi's ` +
-            `reported resolution dates may not reflect actual settlement timing for these markets.`
-          console.warn(`[scan] ${horizonFallbackNote}`)
-          return unexpired
-        })()
-      : withinHorizonCapped
+  // FAIL CLOSED, not open. An earlier version fell back to the uncapped pool
+  // when this filter zeroed out a non-empty pool — and live autopilot then
+  // BOUGHT contracts resolving in 2029-2035, exactly what the horizon cap
+  // exists to prevent. Trading nothing is strictly better than trading
+  // decade-out markets with real money. The pagination-bias root cause is
+  // now also addressed at the source (max_close_ts constrains the fetch
+  // itself), so a zero here means there genuinely are no near-dated markets
+  // in the pool — stop and say so; never widen the universe on our own.
+  const withinHorizon = withinHorizonCapped
+  if (max_days_to_resolution && withinHorizonCapped.length === 0 && unexpired.length > 0) {
+    throw new ScanError(
+      'no_markets',
+      `All ${unexpired.length} fetched markets resolve beyond the ${max_days_to_resolution}-day ` +
+      `horizon. No trade is placed on long-dated markets by design (capital lockup). If this ` +
+      `persists across cycles, either Kalshi's max_close_ts fetch filter isn't being honored ` +
+      `or the horizon is set too tight — consider raising "Max days to resolution" in guardrails.`
+    )
+  }
 
   // Remove near-certain markets (no edge at extremes)
   const midRange = withinHorizon.filter((m) => m.yes_price >= 0.03 && m.yes_price <= 0.97)
@@ -497,9 +506,7 @@ export async function runScan(params: RunScanParams = {}): Promise<RunScanResult
       `${rawMarkets.length} fetched → ${quoted.length} with live two-sided quotes → ` +
       `${unexpired.length} unexpired` +
       (max_days_to_resolution
-        ? horizonFallbackNote
-          ? ` → ${withinHorizonCapped.length} resolving within ${max_days_to_resolution}d (0 — horizon filter skipped, fell back to all ${withinHorizon.length})`
-          : ` → ${withinHorizon.length} resolving within ${max_days_to_resolution}d`
+        ? ` → ${withinHorizon.length} resolving within ${max_days_to_resolution}d`
         : '') +
       ` → ${midRange.length} priced 3–97¢` +
       (category && category !== 'All' ? ` → ${inCategory.length} in "${category}"` : '') +
@@ -767,7 +774,7 @@ export async function runScan(params: RunScanParams = {}): Promise<RunScanResult
   const result = {
     opportunities,
     screened_out: [...codeScreened, ...(scanResult.screened_out || [])],
-    session_notes: [horizonFallbackNote, scanResult.session_notes || ''].filter(Boolean).join(' '),
+    session_notes: scanResult.session_notes || '',
     markets_scanned: normalized.length,
   }
 

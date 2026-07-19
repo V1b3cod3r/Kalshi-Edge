@@ -145,6 +145,22 @@ ok(
     "Regulators said banks were unable to meet the new capital requirements ahead of the deadline.",
   ),
 );
+ok(
+  "isRefusal: catches 'I don't have the actual content...' (2nd reported phrasing)",
+  isRefusal(
+    "I don't have the actual content of Fed Governor Bowman's speech to summarize. You've provided the source, title, and event details, but not the substantive excerpt itself. Please share the text or key passages from her remarks on modernizing financial regulation, and I'll write a 6-8 sentence summary following your editorial guidelines.",
+  ),
+);
+ok(
+  "isRefusal: catches 'without the actual...'",
+  isRefusal("Without the actual text of the remarks, I can only note that a speech was given."),
+);
+ok(
+  "isRefusal: does NOT flag a summary mentioning 'you have provided' style phrasing out of refusal context",
+  !isRefusal(
+    "The report noted that manufacturers have provided conflicting guidance on fourth-quarter output.",
+  ),
+);
 
 console.log(`\n${failed === 0 ? "ALL PASS" : `${failed} FAILED`}`);
 process.exit(failed === 0 ? 0 : 1);

@@ -186,21 +186,37 @@ Use only the title and excerpt given — never ask for more information, never i
 
 Return only the summary text itself — no headers, no preamble, no meta-commentary, no quotation marks.`;
 
-// Defensive guard against the rare case the model still replies
-// conversationally (asking for more source material) instead of producing a
-// summary. Treated as a failed call so it falls back to "Summary
-// unavailable." rather than showing the refusal text to users.
+// Defensive guard against the model replying conversationally (asking for
+// more source material) instead of producing a summary. Scans only the
+// opening portion — refusals declare themselves in the first sentence,
+// and matching further in would risk flagging a legitimate summary that
+// happens to use a word like "unable" mid-article. Treated as a failed
+// call so it falls back to "Summary unavailable." rather than showing the
+// refusal text to users.
 const REFUSAL_PATTERN =
-  /^(i can'?t|i cannot|i'?m unable|i am unable|unfortunately|please provide|this (excerpt|article) (doesn'?t|does not|contains only))/i;
+  /(i (can'?t|cannot|don'?t have|do not have|need)|i'?m unable|i am unable|unfortunately|please (provide|share|send)|you'?ve provided|you have provided|without (the |a )?(actual|substantive)|no actual article content|this (excerpt|article) (doesn'?t|does not|contains only))/i;
 
 export function isRefusal(text: string): boolean {
-  return REFUSAL_PATTERN.test(text.trim());
+  return REFUSAL_PATTERN.test(text.trim().slice(0, 200));
 }
+
+// Some feeds — Fed press/speech feeds especially — publish little or no
+// body text beyond the headline. Asking the model to write a summary from
+// essentially nothing reliably produces a refusal ("please provide the
+// full article text...") ~25% of the time in practice, which is both a bad
+// experience and a wasted call. Cheaper and more reliable to just not ask
+// when there's nothing to summarize — this falls back to the same "Summary
+// unavailable." treatment as any other failed call.
+const MIN_EXCERPT_CHARS = 60;
 
 async function summarizeOne(
   article: ScoredArticle,
   model: string,
 ): Promise<{ summary: string | null; usage: TokenUsage }> {
+  if (article.excerpt.trim().length < MIN_EXCERPT_CHARS) {
+    return { summary: null, usage: EMPTY_USAGE };
+  }
+
   const res = await client.messages.create({
     model,
     max_tokens: 400,
@@ -243,7 +259,7 @@ function cachedSummarizeOne(article: ScoredArticle, model: string): Promise<Stor
     .slice(0, 16);
   const fetcher = unstable_cache(
     async () => ({ ...(await summarizeOne(article, model)), at: Date.now() }),
-    ["summary-v2", model, linkKey],
+    ["summary-v3", model, linkKey],
     { revalidate: SUMMARY_CACHE_SECONDS },
   );
   return fetcher();

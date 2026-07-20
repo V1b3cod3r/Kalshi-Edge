@@ -3,6 +3,7 @@
 import { prefilter } from "../src/lib/prefilter";
 import { formatRelative } from "../src/lib/time";
 import { recencyAdjustment } from "../src/lib/briefing";
+import { isRefusal } from "../src/lib/claude";
 import type { RawArticle } from "../src/lib/types";
 
 let failed = 0;
@@ -115,6 +116,56 @@ ok(
 ok(
   "recency: invalid date on weekly source does not dock",
   recencyAdjustment("not-a-date", "economist") === 0,
+);
+
+// --- isRefusal ---
+ok(
+  "isRefusal: catches 'I can't write an effective summary...'",
+  isRefusal(
+    "I can't write an effective summary from this input. The excerpt provided contains only a headline...",
+  ),
+);
+ok(
+  "isRefusal: catches 'Please provide the full article text...'",
+  isRefusal("Please provide the full article text or a substantive excerpt with specific details."),
+);
+ok(
+  "isRefusal: catches 'Unfortunately, ...'",
+  isRefusal("Unfortunately, this excerpt does not contain enough information to summarize."),
+);
+ok(
+  "isRefusal: does NOT flag a normal summary",
+  !isRefusal(
+    "The Federal Reserve signaled Wednesday that it may begin cutting interest rates as early as next quarter.",
+  ),
+);
+ok(
+  "isRefusal: does NOT flag a summary that happens to mention 'unable' mid-sentence",
+  !isRefusal(
+    "Regulators said banks were unable to meet the new capital requirements ahead of the deadline.",
+  ),
+);
+ok(
+  "isRefusal: catches 'I don't have the actual content...' (2nd reported phrasing)",
+  isRefusal(
+    "I don't have the actual content of Fed Governor Bowman's speech to summarize. You've provided the source, title, and event details, but not the substantive excerpt itself. Please share the text or key passages from her remarks on modernizing financial regulation, and I'll write a 6-8 sentence summary following your editorial guidelines.",
+  ),
+);
+ok(
+  "isRefusal: catches 'without the actual...'",
+  isRefusal("Without the actual text of the remarks, I can only note that a speech was given."),
+);
+ok(
+  "isRefusal: catches 'The provided excerpt contains only...' (3rd reported phrasing)",
+  isRefusal(
+    "The provided excerpt contains only a headline and topic teasers rather than substantive article content, so there is not enough information to write an accurate, self-contained 6–8 sentence briefing. Please paste the full article text or a more detailed excerpt, and I'll produce the summary right away.",
+  ),
+);
+ok(
+  "isRefusal: does NOT flag a summary mentioning 'you have provided' style phrasing out of refusal context",
+  !isRefusal(
+    "The report noted that manufacturers have provided conflicting guidance on fourth-quarter output.",
+  ),
 );
 
 console.log(`\n${failed === 0 ? "ALL PASS" : `${failed} FAILED`}`);

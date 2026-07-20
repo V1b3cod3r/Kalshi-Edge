@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Header } from "@/components/Header";
 import { ModelPicker } from "@/components/ModelPicker";
 import { SourceToggleList } from "@/components/SourceToggleList";
+import { ThemeToggle } from "@/components/ThemeToggle";
 import { DEFAULT_INTERESTS, loadInterests, saveInterests } from "@/lib/interests";
 import {
   DEFAULT_MODELS,
@@ -15,6 +16,7 @@ import {
 } from "@/lib/models";
 import { loadEnabledSources, saveEnabledSources } from "@/lib/source-prefs";
 import { SOURCE_LIST } from "@/lib/sources";
+import { applyTheme, DEFAULT_THEME, loadTheme, saveTheme, type Theme } from "@/lib/theme";
 import type { SourceId } from "@/lib/types";
 
 const MAX_INTERESTS = 30;
@@ -28,12 +30,14 @@ export default function SettingsPage() {
   const [enabledSources, setEnabledSources] = useState<Set<SourceId>>(
     () => new Set(ALL_SOURCE_IDS),
   );
+  const [theme, setTheme] = useState<Theme>(DEFAULT_THEME);
   const [hydrated, setHydrated] = useState(false);
 
   useEffect(() => {
     setInterests(loadInterests());
     setModels(loadModels());
     setEnabledSources(new Set(loadEnabledSources()));
+    setTheme(loadTheme());
     setHydrated(true);
   }, []);
 
@@ -83,6 +87,12 @@ export default function SettingsPage() {
     saveEnabledSources([...next]);
   }
 
+  function changeTheme(next: Theme) {
+    setTheme(next);
+    saveTheme(next);
+    applyTheme(next);
+  }
+
   async function logout() {
     await fetch("/api/logout", { method: "POST" });
     router.replace("/login");
@@ -92,6 +102,18 @@ export default function SettingsPage() {
     <main className="min-h-screen pb-16">
       <Header subtitle="Tune what makes it into your briefing." />
       <div className="container-narrow space-y-6">
+        <section className="rounded-2xl bg-surface shadow-card p-6 sm:p-7">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <h2 className="text-[14px] font-medium text-ink">Appearance</h2>
+              <p className="mt-0.5 text-[12px] text-ink-faint">
+                System matches your device automatically.
+              </p>
+            </div>
+            <ThemeToggle value={theme} onChange={changeTheme} />
+          </div>
+        </section>
+
         <section className="rounded-2xl bg-surface shadow-card p-6 sm:p-7">
           <label className="block text-[13px] font-medium text-ink-muted mb-2">
             Add an interest
@@ -153,7 +175,7 @@ export default function SettingsPage() {
                   <button
                     type="button"
                     onClick={() => remove(i)}
-                    className="pressable text-[13px] text-ink-muted hover:text-[#d70015]"
+                    className="pressable text-[13px] text-ink-muted hover:text-[#d70015] dark:hover:text-[#ff453a]"
                     aria-label={`Remove ${interest}`}
                   >
                     Remove
@@ -186,7 +208,7 @@ export default function SettingsPage() {
             onToggle={toggleSource}
           />
           {hydrated && enabledSources.size === 0 && (
-            <p className="px-6 py-3.5 border-t border-surface-line text-[12px] text-[#8a6d1a] bg-[#fff8e5]">
+            <p className="px-6 py-3.5 border-t border-surface-line text-[12px] text-[#8a6d1a] dark:text-[#e0b566] bg-[#fff8e5] dark:bg-[#3a2f14]">
               No sources are on — your briefing will come back empty until you
               turn at least one on.
             </p>

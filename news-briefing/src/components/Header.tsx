@@ -18,17 +18,17 @@ export function Header({ subtitle, onRefresh, refreshing }: HeaderProps) {
   });
   const onSettings = pathname === "/settings";
   return (
-    <header className="container-narrow pt-10 pb-6 sm:pt-14 sm:pb-8">
+    <header className="container-narrow pt-8 pb-5 sm:pt-12 sm:pb-7">
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
-          <p className="text-[13px] uppercase tracking-[0.12em] text-ink-faint">
+          <p className="text-[13px] font-medium uppercase tracking-[0.1em] text-ink-faint">
             {today}
           </p>
-          <h1 className="mt-1 text-[34px] sm:text-[40px] font-semibold tracking-[-0.025em] text-ink">
+          <h1 className="mt-1.5 text-[32px] sm:text-[38px] font-semibold leading-[1.05] tracking-[-0.03em] text-ink">
             Briefing
           </h1>
           {subtitle && (
-            <p className="mt-2 text-[15px] text-ink-muted">{subtitle}</p>
+            <p className="mt-1.5 text-[14px] leading-[1.4] text-ink-muted">{subtitle}</p>
           )}
         </div>
         <div className="mt-2 flex items-center gap-2">

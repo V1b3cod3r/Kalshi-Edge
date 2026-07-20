@@ -136,7 +136,7 @@ export default function BriefingPage() {
       />
       <div className="container-narrow">
         {briefing && briefing.downSources.length > 0 && (
-          <div className="mb-4 rounded-xl bg-[#fff8e5] border border-[#f0dca3] px-4 py-3 text-[13px] text-[#8a6d1a]">
+          <div className="mb-4 rounded-xl bg-[#fff8e5] dark:bg-[#3a2f14] border border-[#f0dca3] dark:border-[#5c4a1f] px-4 py-3 text-[13px] text-[#8a6d1a] dark:text-[#e0b566]">
             {briefing.downSources.map((s) => s.sourceName).join(", ")}{" "}
             {briefing.downSources.length === 1 ? "is" : "are"} down right now —
             today&apos;s briefing may be missing some coverage.
@@ -202,10 +202,10 @@ export default function BriefingPage() {
             {sortedTopStories.length > 0 && (
               <section className="mt-10">
                 <div className="mb-4 px-1">
-                  <h2 className="text-[13px] uppercase tracking-[0.12em] text-ink-faint">
+                  <h2 className="text-[13px] font-medium uppercase tracking-[0.1em] text-ink-faint">
                     Top stories
                   </h2>
-                  <p className="mt-1 text-[13px] text-ink-muted">
+                  <p className="mt-1.5 text-[13px] leading-[1.4] text-ink-muted">
                     Widely covered today — may not match your interests.
                   </p>
                 </div>

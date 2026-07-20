@@ -3,6 +3,32 @@
 @tailwind utilities;
 
 @layer base {
+  :root {
+    /* Warm clay accent instead of a flat corporate blue. */
+    --ink: 29 29 31;
+    --ink-soft: 58 58 60;
+    --ink-muted: 110 110 115;
+    --ink-faint: 161 161 166;
+    --surface: 255 255 255;
+    --surface-tint: 245 245 247;
+    --surface-line: 229 229 234;
+    --accent: 193 92 61;
+    color-scheme: light;
+  }
+  .dark {
+    /* iOS-style dark mode: near-black page background, slightly lighter
+       elevated card surface — cards read as "raised" through that tint
+       contrast alone, since shadow-card is too faint to show on black. */
+    --ink: 245 245 247;
+    --ink-soft: 209 209 214;
+    --ink-muted: 152 152 157;
+    --ink-faint: 99 99 102;
+    --surface: 28 28 30;
+    --surface-tint: 0 0 0;
+    --surface-line: 44 44 46;
+    --accent: 224 145 111;
+    color-scheme: dark;
+  }
   html {
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;

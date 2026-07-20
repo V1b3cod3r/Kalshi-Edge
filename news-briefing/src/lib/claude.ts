@@ -175,6 +175,15 @@ export async function scoreAndCluster(
   return { articles, clusters, usage };
 }
 
+// Freeform text output let the model reply conversationally ("please
+// provide the full article...") whenever it judged an excerpt too thin —
+// three different wordings of that refusal showed up in production, which
+// means pattern-matching the phrasing is a losing game (the space of ways
+// to say "I need more information" is unbounded). Forcing strict JSON with
+// an explicit summary:null escape hatch fixes this structurally instead:
+// the model has a designated, schema-legal way to say "not enough here"
+// that never produces free text, the same technique that already works
+// reliably for the scoring/clustering call above.
 const SUMMARY_SYSTEM = `You are a senior news editor writing a daily briefing. Write a summary of the news article excerpt the user provides. The summary must:
 - Open with the most newsworthy fact, not the source
 - Explain why it matters to a reader interested in finance, markets, business, and policy
@@ -182,31 +191,28 @@ const SUMMARY_SYSTEM = `You are a senior news editor writing a daily briefing. W
 - Use crisp, declarative sentences in active voice
 - Avoid hype, hedging, and filler phrases like "in a recent development"
 
-Use only the title and excerpt given — never ask for more information, never invent facts not present in them, and never comment on whether the input is sufficient. Write 6-8 sentences when the excerpt supports it; if the excerpt is thin (e.g. headline only, little detail), write 2-3 sentences that stay strictly to what's given rather than padding or speculating. A short accurate summary is always correct output; a refusal or request for more material is never correct output.
+Use only the title and excerpt given — never invent facts not present in them. Write 6-8 sentences when the excerpt supports it; if the excerpt is thin (e.g. headline plus a brief teaser), write 2-3 sentences that stay strictly to what's given rather than padding or speculating.
 
-Return only the summary text itself — no headers, no preamble, no meta-commentary, no quotation marks.`;
+Return strict JSON only, in the form: {"summary": "<text>"}. If the excerpt truly contains nothing beyond the bare headline — no teaser, no detail, no context — return {"summary": null} instead. Never return anything outside this JSON object; there is no case where asking for more material is the right response.`;
 
-// Defensive guard against the model replying conversationally (asking for
-// more source material) instead of producing a summary. Scans only the
-// opening portion — refusals declare themselves in the first sentence,
-// and matching further in would risk flagging a legitimate summary that
-// happens to use a word like "unable" mid-article. Treated as a failed
-// call so it falls back to "Summary unavailable." rather than showing the
-// refusal text to users.
+interface SummaryResult {
+  summary: string | null;
+}
+
+// Defensive guard against the rare case the model still emits prose (inside
+// or outside the JSON) instead of a real summary — belt-and-suspenders on
+// top of the JSON contract above, not the primary line of defense anymore.
 const REFUSAL_PATTERN =
-  /(i (can'?t|cannot|don'?t have|do not have|need)|i'?m unable|i am unable|unfortunately|please (provide|share|send)|you'?ve provided|you have provided|without (the |a )?(actual|substantive)|no actual article content|this (excerpt|article) (doesn'?t|does not|contains only))/i;
+  /(i (can'?t|cannot|don'?t have|do not have|need)|i'?m unable|i am unable|unfortunately|please (provide|share|send|paste)|you'?ve provided|you have provided|without (the |a )?(actual|substantive)|no actual article content|not enough information|(this|the provided) (excerpt|article) (doesn'?t|does not|contains only))/i;
 
 export function isRefusal(text: string): boolean {
   return REFUSAL_PATTERN.test(text.trim().slice(0, 200));
 }
 
 // Some feeds — Fed press/speech feeds especially — publish little or no
-// body text beyond the headline. Asking the model to write a summary from
-// essentially nothing reliably produces a refusal ("please provide the
-// full article text...") ~25% of the time in practice, which is both a bad
-// experience and a wasted call. Cheaper and more reliable to just not ask
-// when there's nothing to summarize — this falls back to the same "Summary
-// unavailable." treatment as any other failed call.
+// body text beyond the headline. Below this length there's nothing for the
+// model to work with regardless of output format, so skip the call
+// entirely and fall back straight to "Summary unavailable."
 const MIN_EXCERPT_CHARS = 60;
 
 async function summarizeOne(
@@ -234,9 +240,17 @@ async function summarizeOne(
       },
     ],
   });
-  const text = textOf(res).trim();
+
+  const usage = readUsage(res);
+  let parsed: SummaryResult;
+  try {
+    parsed = parseJson<SummaryResult>(textOf(res));
+  } catch {
+    return { summary: null, usage };
+  }
+  const text = typeof parsed.summary === "string" ? parsed.summary.trim() : "";
   const usable = text.length > 0 && !isRefusal(text);
-  return { summary: usable ? text : null, usage: readUsage(res) };
+  return { summary: usable ? text : null, usage };
 }
 
 interface StoredSummary {
@@ -259,7 +273,7 @@ function cachedSummarizeOne(article: ScoredArticle, model: string): Promise<Stor
     .slice(0, 16);
   const fetcher = unstable_cache(
     async () => ({ ...(await summarizeOne(article, model)), at: Date.now() }),
-    ["summary-v3", model, linkKey],
+    ["summary-v4", model, linkKey],
     { revalidate: SUMMARY_CACHE_SECONDS },
   );
   return fetcher();

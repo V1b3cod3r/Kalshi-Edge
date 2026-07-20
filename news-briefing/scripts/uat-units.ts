@@ -156,6 +156,12 @@ ok(
   isRefusal("Without the actual text of the remarks, I can only note that a speech was given."),
 );
 ok(
+  "isRefusal: catches 'The provided excerpt contains only...' (3rd reported phrasing)",
+  isRefusal(
+    "The provided excerpt contains only a headline and topic teasers rather than substantive article content, so there is not enough information to write an accurate, self-contained 6–8 sentence briefing. Please paste the full article text or a more detailed excerpt, and I'll produce the summary right away.",
+  ),
+);
+ok(
   "isRefusal: does NOT flag a summary mentioning 'you have provided' style phrasing out of refusal context",
   !isRefusal(
     "The report noted that manufacturers have provided conflicting guidance on fourth-quarter output.",

@@ -45,7 +45,7 @@ export async function getCachedBriefing(
   force = false,
   options: BriefingOptions = {},
 ): Promise<Briefing> {
-  const key = `briefing-v14-${todayKey()}-${hashInterests(interests)}-${modelTag(options)}-${sourcesTag(options)}`;
+  const key = `briefing-v15-${todayKey()}-${hashInterests(interests)}-${modelTag(options)}-${sourcesTag(options)}`;
   if (force) revalidateTag(key);
   // When the user clicks refresh we also bypass the RSS-level cache so we
   // actually pull whatever just hit the wire, not whatever was cached

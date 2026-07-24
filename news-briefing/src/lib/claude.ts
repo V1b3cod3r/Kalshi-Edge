@@ -175,23 +175,22 @@ export async function scoreAndCluster(
   return { articles, clusters, usage };
 }
 
-// Freeform text output let the model reply conversationally ("please
-// provide the full article...") whenever it judged an excerpt too thin —
-// three different wordings of that refusal showed up in production, which
-// means pattern-matching the phrasing is a losing game (the space of ways
-// to say "I need more information" is unbounded). Forcing strict JSON with
-// an explicit summary:null escape hatch fixes this structurally instead:
-// the model has a designated, schema-legal way to say "not enough here"
-// that never produces free text, the same technique that already works
-// reliably for the scoring/clustering call above.
-const SUMMARY_SYSTEM = `You are a senior news editor writing a daily briefing. Write a summary of the news article excerpt the user provides. The summary must:
-- Open with the most newsworthy fact, not the source
+// Some sources (The Economist, Project Syndicate) publish headline-only RSS
+// feeds — the excerpt is empty or a one-line teaser. The prompt handles
+// both cases: a full 6-8 sentence briefing when there's real body text, and
+// a brief headline-framing when there isn't, with a hard rule against
+// inventing specific facts so the thin case stays honest.
+const SUMMARY_SYSTEM = `You are a senior news editor writing a daily briefing. Using the article's title and excerpt, write a summary. The summary must:
+- Open with the most newsworthy point
 - Explain why it matters to a reader interested in finance, markets, business, and policy
-- Be self-contained (the reader will not click through unless intrigued)
 - Use crisp, declarative sentences in active voice
 - Avoid hype, hedging, and filler phrases like "in a recent development"
 
-Use only the title and excerpt given — never invent facts not present in them. Write 6-8 sentences when the excerpt supports it; if the excerpt is thin (headline plus a brief teaser), write 2-3 sentences that stay strictly to what's given rather than padding or speculating. Always produce a summary from whatever material is present — never ask for more text, never state that the excerpt is insufficient, never add meta-commentary.
+Length: when the excerpt has real detail, write 6-8 sentences. When the excerpt is thin or the title is essentially all you have, write 1-2 sentences that convey what the piece is about, drawn from the headline itself.
+
+Hard rules:
+- Never invent specific facts — figures, quotes, names, dates, events — that are not in the title or excerpt. When you only have a headline, stay at the level of framing the topic; do not fabricate details to fill space.
+- Always produce a summary from whatever is given. Never ask for more text, never state that the excerpt is insufficient, never add meta-commentary.
 
 Return only the summary text itself — no headers, no preamble, no quotation marks.`;
 
@@ -237,20 +236,14 @@ export function extractSummary(raw: string): string | null {
   return text;
 }
 
-// Some feeds — Fed press/speech feeds especially — publish little or no
-// body text beyond the headline. Below this length there's nothing for the
-// model to work with regardless of output format, so skip the call
-// entirely and fall back straight to "Summary unavailable."
-const MIN_EXCERPT_CHARS = 60;
-
 async function summarizeOne(
   article: ScoredArticle,
   model: string,
 ): Promise<{ summary: string | null; usage: TokenUsage }> {
-  if (article.excerpt.trim().length < MIN_EXCERPT_CHARS) {
-    return { summary: null, usage: EMPTY_USAGE };
-  }
-
+  // No excerpt-length skip: headline-only feeds (Economist, Project
+  // Syndicate) still get a brief title-based summary — the prompt is built
+  // to frame the topic from the headline without inventing facts. A refusal
+  // that slips through is still caught by extractSummary() -> null.
   const res = await client.messages.create({
     model,
     max_tokens: 400,
@@ -293,7 +286,7 @@ function cachedSummarizeOne(article: ScoredArticle, model: string): Promise<Stor
     .slice(0, 16);
   const fetcher = unstable_cache(
     async () => ({ ...(await summarizeOne(article, model)), at: Date.now() }),
-    ["summary-v5", model, linkKey],
+    ["summary-v6", model, linkKey],
     { revalidate: SUMMARY_CACHE_SECONDS },
   );
   return fetcher();

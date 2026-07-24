@@ -191,22 +191,50 @@ const SUMMARY_SYSTEM = `You are a senior news editor writing a daily briefing. W
 - Use crisp, declarative sentences in active voice
 - Avoid hype, hedging, and filler phrases like "in a recent development"
 
-Use only the title and excerpt given — never invent facts not present in them. Write 6-8 sentences when the excerpt supports it; if the excerpt is thin (e.g. headline plus a brief teaser), write 2-3 sentences that stay strictly to what's given rather than padding or speculating.
+Use only the title and excerpt given — never invent facts not present in them. Write 6-8 sentences when the excerpt supports it; if the excerpt is thin (headline plus a brief teaser), write 2-3 sentences that stay strictly to what's given rather than padding or speculating. Always produce a summary from whatever material is present — never ask for more text, never state that the excerpt is insufficient, never add meta-commentary.
 
-Return strict JSON only, in the form: {"summary": "<text>"}. If the excerpt truly contains nothing beyond the bare headline — no teaser, no detail, no context — return {"summary": null} instead. Never return anything outside this JSON object; there is no case where asking for more material is the right response.`;
+Return only the summary text itself — no headers, no preamble, no quotation marks.`;
 
-interface SummaryResult {
-  summary: string | null;
-}
-
-// Defensive guard against the rare case the model still emits prose (inside
-// or outside the JSON) instead of a real summary — belt-and-suspenders on
-// top of the JSON contract above, not the primary line of defense anymore.
+// Defensive guard against the model replying conversationally (asking for
+// more source material) instead of producing a summary. This is the primary
+// filter for that case; extractSummary() runs it on every candidate summary.
 const REFUSAL_PATTERN =
   /(i (can'?t|cannot|don'?t have|do not have|need)|i'?m unable|i am unable|unfortunately|please (provide|share|send|paste)|you'?ve provided|you have provided|without (the |a )?(actual|substantive)|no actual article content|not enough information|(this|the provided) (excerpt|article) (doesn'?t|does not|contains only))/i;
 
 export function isRefusal(text: string): boolean {
   return REFUSAL_PATTERN.test(text.trim().slice(0, 200));
+}
+
+/**
+ * Turn a raw model response into a usable summary, or null if it isn't one.
+ *
+ * Accepts BOTH a plain-text summary and a {"summary": ...} JSON envelope.
+ * An earlier version required strict JSON, which regressed the happy path:
+ * the model normally returns a perfectly good plain-text summary, and
+ * rejecting anything without braces made every card read "Summary
+ * unavailable." Here JSON is honored when present (including an explicit
+ * null for empty excerpts) but plain text is kept as-is; refusals are
+ * filtered either way.
+ */
+export function extractSummary(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+
+  let text = trimmed;
+  if (trimmed.startsWith("{")) {
+    let parsed: { summary?: string | null };
+    try {
+      parsed = parseJson<{ summary?: string | null }>(trimmed);
+    } catch {
+      // Looked like JSON but wasn't valid — don't surface raw braces to the user.
+      return null;
+    }
+    if (parsed.summary === null) return null;
+    text = typeof parsed.summary === "string" ? parsed.summary.trim() : "";
+  }
+
+  if (!text || isRefusal(text)) return null;
+  return text;
 }
 
 // Some feeds — Fed press/speech feeds especially — publish little or no
@@ -242,15 +270,7 @@ async function summarizeOne(
   });
 
   const usage = readUsage(res);
-  let parsed: SummaryResult;
-  try {
-    parsed = parseJson<SummaryResult>(textOf(res));
-  } catch {
-    return { summary: null, usage };
-  }
-  const text = typeof parsed.summary === "string" ? parsed.summary.trim() : "";
-  const usable = text.length > 0 && !isRefusal(text);
-  return { summary: usable ? text : null, usage };
+  return { summary: extractSummary(textOf(res)), usage };
 }
 
 interface StoredSummary {
@@ -273,7 +293,7 @@ function cachedSummarizeOne(article: ScoredArticle, model: string): Promise<Stor
     .slice(0, 16);
   const fetcher = unstable_cache(
     async () => ({ ...(await summarizeOne(article, model)), at: Date.now() }),
-    ["summary-v4", model, linkKey],
+    ["summary-v5", model, linkKey],
     { revalidate: SUMMARY_CACHE_SECONDS },
   );
   return fetcher();

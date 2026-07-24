@@ -3,7 +3,7 @@
 import { prefilter } from "../src/lib/prefilter";
 import { formatRelative } from "../src/lib/time";
 import { recencyAdjustment } from "../src/lib/briefing";
-import { isRefusal } from "../src/lib/claude";
+import { isRefusal, extractSummary } from "../src/lib/claude";
 import type { RawArticle } from "../src/lib/types";
 
 let failed = 0;
@@ -166,6 +166,43 @@ ok(
   !isRefusal(
     "The report noted that manufacturers have provided conflicting guidance on fourth-quarter output.",
   ),
+);
+
+// --- extractSummary --- (the regression: strict JSON discarded good plain text)
+const goodSummary =
+  "The Federal Reserve held rates steady on Wednesday. Officials signaled one more hike may come this year.";
+ok(
+  "extractSummary: keeps a plain-text summary (the regression case)",
+  extractSummary(goodSummary) === goodSummary,
+);
+ok(
+  "extractSummary: keeps a JSON-wrapped summary",
+  extractSummary(`{"summary": ${JSON.stringify(goodSummary)}}`) === goodSummary,
+);
+ok(
+  "extractSummary: JSON null escape hatch -> null",
+  extractSummary('{"summary": null}') === null,
+);
+ok(
+  "extractSummary: plain-text refusal -> null",
+  extractSummary(
+    "The provided excerpt contains only a headline and topic teasers, so there is not enough information to summarize.",
+  ) === null,
+);
+ok(
+  "extractSummary: JSON-wrapped refusal -> null",
+  extractSummary('{"summary": "Please provide the full article text and I will summarize it."}') ===
+    null,
+);
+ok("extractSummary: empty string -> null", extractSummary("   ") === null);
+ok(
+  "extractSummary: broken JSON that starts with { -> null (no raw braces shown)",
+  extractSummary('{"summary": "unterminated') === null,
+);
+ok(
+  "extractSummary: plain summary containing a brace mid-sentence is kept",
+  extractSummary("Analysts modeled the payout as f(x) growth across the quarter.") ===
+    "Analysts modeled the payout as f(x) growth across the quarter.",
 );
 
 console.log(`\n${failed === 0 ? "ALL PASS" : `${failed} FAILED`}`);

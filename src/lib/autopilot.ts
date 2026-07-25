@@ -43,11 +43,34 @@ const CLUSTER_KEYWORDS: Array<{ cluster: string; keywords: string[] }> = [
   { cluster: 'weather', keywords: ['temperature', 'rain', 'snow', 'weather'] },
 ]
 
+// Kalshi tickers are structured `{event_ticker}-{strike}`, e.g.
+// KXTEMPNYCH-26JUL1207-T74.99 belongs to event KXTEMPNYCH-26JUL1207. Markets
+// in the same event are near-perfectly correlated (different strikes on ONE
+// underlying question), so the event is the right correlation unit.
+//
+// Deriving it from the ticker rather than reading an API field is deliberate:
+// the field isn't guaranteed present on every response shape, and — more
+// importantly — the cluster key must be computed IDENTICALLY for existing
+// Kalshi positions and for new scan opportunities, or the exposure caps
+// silently compare two different keyspaces and never bind.
+export function eventKeyFromTicker(ticker: string): string | null {
+  const parts = String(ticker).split('-')
+  if (parts.length < 2) return null
+  return parts.slice(0, -1).join('-').toUpperCase()
+}
+
 export function clusterForTicker(ticker: string, title?: string): string {
   const haystack = `${ticker} ${title ?? ''}`.toLowerCase()
+  // Keyword clusters first: they capture CROSS-event correlation (every rates
+  // market moves together regardless of event), which is broader than an
+  // event and therefore the more conservative cap.
   for (const { cluster, keywords } of CLUSTER_KEYWORDS) {
     if (keywords.some((k) => haystack.includes(k))) return cluster
   }
+  // Then the event — far tighter than the old 4-char prefix fallback, which
+  // let several strikes on the same question count as independent positions.
+  const eventKey = eventKeyFromTicker(ticker)
+  if (eventKey) return `evt:${eventKey}`
   return ticker.slice(0, 4).toUpperCase()
 }
 
@@ -569,12 +592,27 @@ function evaluateOpportunity(opp: ScanOpportunity, ctx: GuardrailContext): Decis
 
   // --- Kelly sizing (all dollars) ------------------------------------------
   // b = net odds = payout/stake for the chosen side; p = shrunk win probability.
+  //
+  // Kelly assumes p is the TRUE probability. Ours is an LLM estimate blended
+  // with a market price, carrying substantial unquantified error — and Kelly
+  // is hypersensitive to error in p: overestimating by a few points turns
+  // quarter-Kelly into effectively over-levered. So size from a conservative
+  // LOWER BOUND on p, haircut by Claude's own stated confidence, rather than
+  // from the point estimate.
   const b = (1 - price) / price
-  const p = opp.direction === 'YES' ? opp.p_shrunk : 1 - opp.p_shrunk
+  const pRaw = opp.direction === 'YES' ? opp.p_shrunk : 1 - opp.p_shrunk
+  const haircutPp =
+    opp.confidence === 'HIGH' ? ap.kelly_haircut_high_pp
+    : opp.confidence === 'MEDIUM' ? ap.kelly_haircut_medium_pp
+    : ap.kelly_haircut_low_pp
+  const p = Math.max(0.01, pRaw - (haircutPp ?? 0) / 100)
   const q = 1 - p
   const kellyFull = (p * b - q) / b
   if (!Number.isFinite(kellyFull) || kellyFull <= 0) {
-    return skip(`Kelly criterion is non-positive (shrunk win prob ${(p * 100).toFixed(1)}% at ${priceCents}¢) — no edge after shrinkage`)
+    return skip(
+      `Kelly criterion is non-positive after the ${haircutPp}pp ${opp.confidence}-confidence ` +
+      `haircut (win prob ${(pRaw * 100).toFixed(1)}% → ${(p * 100).toFixed(1)}% at ${priceCents}¢)`
+    )
   }
   const f = ap.kelly_fraction * kellyFull
 

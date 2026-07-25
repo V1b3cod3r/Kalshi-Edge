@@ -355,6 +355,9 @@ export default function AutopilotPage() {
       exit_enabled: form.exit_enabled,
       take_profit_pct: form.take_profit_pct,
       stop_loss_pct: form.stop_loss_pct,
+      kelly_haircut_high_pp: form.kelly_haircut_high_pp,
+      kelly_haircut_medium_pp: form.kelly_haircut_medium_pp,
+      kelly_haircut_low_pp: form.kelly_haircut_low_pp,
       scan_limit: form.scan_limit,
       max_days_to_resolution: form.max_days_to_resolution,
       min_resolved_predictions_for_live: form.min_resolved_predictions_for_live,
@@ -731,6 +734,33 @@ export default function AutopilotPage() {
               />
             </div>
           </div>
+          {/* Kelly confidence haircut — sizes from a conservative LOWER BOUND
+              on win probability rather than the point estimate, because Kelly
+              is hypersensitive to error in p. Higher = smaller bets. */}
+          <div className="col-span-2 md:col-span-3 mt-2 pt-4" style={{ borderTop: '1px solid #2a2a3e' }}>
+            <label style={{ ...labelStyle, marginBottom: '2px' }}>Kelly confidence haircut (pp)</label>
+            <p className="text-xs mb-3" style={{ color: '#64748b' }}>
+              Percentage points subtracted from the estimated win probability before sizing.
+              Kelly assumes a true probability; ours is an estimate, and Kelly is hypersensitive
+              to that error. Higher values = smaller, safer positions.
+            </p>
+          </div>
+          <div>
+            <label style={labelStyle}>Haircut — HIGH conf</label>
+            <input type="number" min={0} max={30} step={1} value={form.kelly_haircut_high_pp ?? 3}
+              onChange={(e) => setForm({ ...form, kelly_haircut_high_pp: parseFloat(e.target.value) || 0 })} style={inputStyle} />
+          </div>
+          <div>
+            <label style={labelStyle}>Haircut — MEDIUM conf</label>
+            <input type="number" min={0} max={30} step={1} value={form.kelly_haircut_medium_pp ?? 5}
+              onChange={(e) => setForm({ ...form, kelly_haircut_medium_pp: parseFloat(e.target.value) || 0 })} style={inputStyle} />
+          </div>
+          <div>
+            <label style={labelStyle}>Haircut — LOW conf</label>
+            <input type="number" min={0} max={30} step={1} value={form.kelly_haircut_low_pp ?? 8}
+              onChange={(e) => setForm({ ...form, kelly_haircut_low_pp: parseFloat(e.target.value) || 0 })} style={inputStyle} />
+          </div>
+
           <div>
             <label style={labelStyle}>Take profit at +%</label>
             <input type="number" min={1} step={1} value={form.take_profit_pct}

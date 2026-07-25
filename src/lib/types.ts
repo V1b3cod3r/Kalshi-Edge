@@ -50,6 +50,38 @@ export interface Prediction {
   notes?: string
   source: 'scanner' | 'analyze' | 'manual' | 'autopilot'
   lesson_id?: string             // set after lesson extracted for a wrong prediction
+
+  // --- Calibration-integrity fields (added to fix selection bias) -----------
+  // false = evaluated but did NOT clear the edge filter. Logging ONLY
+  // actionable rows meant the Claude-vs-market comparison was computed on a
+  // sample selected by the very disagreement it was trying to validate, so a
+  // zero-skill model still looked distinctive. Legacy rows have this
+  // undefined and are treated as `true` (all pre-fix rows were actionable).
+  actionable?: boolean
+  // Raw two-sided quote at prediction time. market_price above is the YES ASK,
+  // which handicaps the market baseline by half the spread on every
+  // observation; the midpoint of these two is the fair comparison price.
+  market_yes_bid?: number
+  market_yes_ask?: number
+  // Price actually paid per contract for the recommended side (YES ask for a
+  // YES call, NO ask for a NO call). Enables realized-ROI-per-edge-bucket
+  // without a settlements join — which matters because dry-run predictions
+  // never settle on Kalshi and would otherwise be invisible.
+  execution_price?: number
+  confidence?: 'LOW' | 'MEDIUM' | 'HIGH'
+}
+
+// Realized performance grouped by the edge we CLAIMED at entry. This is the
+// metric that decides whether to trade at all: "when we claimed 4-6% edge,
+// what did we actually earn per dollar risked?" Brier measures probabilistic
+// calibration, which can improve while losing money.
+export interface EdgeBucketStats {
+  bucket: string                    // '0-2%', '2-4%', '4-6%', '6-10%', '10%+'
+  count: number                     // actionable predictions in this bucket
+  resolved: number                  // of those, how many have settled
+  claimed_edge_avg: number          // mean claimed edge (pp)
+  realized_roi_pct: number | null   // Σ payoff / Σ cost × 100; null until resolved > 0
+  hit_rate: number | null           // fraction where direction was correct
 }
 
 export interface Lesson {
@@ -94,6 +126,15 @@ export interface AutopilotSettings {
   // it has any edge over the market. Left as a setting (not deleted) so it
   // can be turned back on without reconstructing the logic.
   require_calibration_to_go_live: boolean
+  // Kelly assumes p is the TRUE probability; ours is an LLM estimate blended
+  // with a market price, carrying substantial unquantified error — and Kelly
+  // is hypersensitive to error in p (overestimating by a few points turns
+  // quarter-Kelly into effectively over-levered). Size from a conservative
+  // LOWER BOUND on p instead, haircut by Claude's own stated confidence.
+  // Percentage points subtracted from the win probability before sizing.
+  kelly_haircut_high_pp: number    // default 3
+  kelly_haircut_medium_pp: number  // default 5
+  kelly_haircut_low_pp: number     // default 8
 }
 
 export interface AppSettings {
@@ -159,6 +200,12 @@ export interface CalibrationStats {
     analyze: { count: number; brier: number | null; win_rate: number | null }
   }
   by_category: Record<string, { predictions: number; accuracy: number; brier: number }>
+  // Realized P&L grouped by claimed edge — the primary go/no-go metric.
+  by_edge_bucket: EdgeBucketStats[]
+  // How many resolved rows carried a two-sided quote (and so could be scored
+  // against the market MIDPOINT). When 0, market_brier fell back to the
+  // ask-priced legacy baseline and the comparison is biased toward Claude.
+  market_brier_midpoint_samples: number
 }
 
 export interface MarketInput {
@@ -166,11 +213,21 @@ export interface MarketInput {
   title: string
   resolution_criteria?: string
   resolution_date?: string
-  yes_price: number
-  no_price: number
+  yes_price: number   // YES ASK — the price a YES buyer pays
+  no_price: number    // NO ASK — the price a NO buyer pays
+  // Raw quote sides, retained so calibration can score the market at its
+  // MIDPOINT rather than at the ask (scoring at the ask hands Claude half the
+  // spread as free advantage on every observation).
+  yes_bid?: number
+  yes_ask?: number
   volume_24h?: number
   category?: string
   corr_group?: string
+  // Kalshi groups markets under an event; markets sharing an event_ticker are
+  // near-perfectly correlated. Preferred over ticker-prefix string matching
+  // for correlation-cluster caps. Optional: presence on the markets response
+  // is not guaranteed, so consumers must fall back.
+  event_ticker?: string
 }
 
 export interface AnalysisResult {

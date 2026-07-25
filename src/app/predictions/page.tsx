@@ -164,6 +164,58 @@ export default function PredictionsPage() {
         )}
       </div>
 
+      {/* Realized ROI by claimed edge — THE go/no-go metric. Brier measures
+          probabilistic calibration, which can improve while losing money;
+          this answers "when we claimed X% edge, what did we actually earn per
+          dollar risked?" Sits above the Brier box deliberately. */}
+      {calStats?.by_edge_bucket && calStats.by_edge_bucket.some((b) => b.count > 0) && (
+        <div className="rounded-xl border p-6 mb-6" style={{ backgroundColor: '#12121a', borderColor: '#1e1e2e' }}>
+          <div className="text-xs font-medium uppercase tracking-wider mb-1" style={{ color: '#64748b' }}>
+            Realized Return by Claimed Edge
+          </div>
+          <p className="text-xs mb-4" style={{ color: '#475569' }}>
+            The go/no-go metric. If the higher-edge buckets don&apos;t earn more than the lower ones,
+            the edge estimate isn&apos;t predictive — regardless of what the Brier score says.
+          </p>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr style={{ backgroundColor: '#0d0d17' }}>
+                  <th className="px-3 py-2 text-left" style={{ color: '#64748b' }}>Claimed edge</th>
+                  <th className="px-3 py-2 text-right" style={{ color: '#64748b' }}>Predictions</th>
+                  <th className="px-3 py-2 text-right" style={{ color: '#64748b' }}>Resolved</th>
+                  <th className="px-3 py-2 text-right" style={{ color: '#64748b' }}>Hit rate</th>
+                  <th className="px-3 py-2 text-right" style={{ color: '#64748b' }}>Realized ROI</th>
+                </tr>
+              </thead>
+              <tbody>
+                {calStats.by_edge_bucket.map((b) => (
+                  <tr key={b.bucket} style={{ borderTop: '1px solid #1a1a28' }}>
+                    <td className="px-3 py-2 font-mono" style={{ color: '#f1f5f9' }}>{b.bucket}</td>
+                    <td className="px-3 py-2 text-right" style={{ color: '#94a3b8' }}>{b.count}</td>
+                    <td className="px-3 py-2 text-right" style={{ color: '#94a3b8' }}>{b.resolved}</td>
+                    <td className="px-3 py-2 text-right" style={{ color: '#94a3b8' }}>
+                      {b.hit_rate != null ? `${Math.round(b.hit_rate * 100)}%` : '—'}
+                    </td>
+                    <td
+                      className="px-3 py-2 text-right font-bold"
+                      style={{ color: b.realized_roi_pct == null ? '#475569' : b.realized_roi_pct > 0 ? '#22c55e' : '#ef4444' }}
+                    >
+                      {b.realized_roi_pct != null ? `${b.realized_roi_pct > 0 ? '+' : ''}${b.realized_roi_pct}%` : '—'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {calStats.by_edge_bucket.every((b) => b.resolved === 0) && (
+            <p className="text-xs mt-3" style={{ color: '#64748b' }}>
+              No predictions have resolved yet — ROI fills in as markets settle.
+            </p>
+          )}
+        </div>
+      )}
+
       {/* Claude vs Market — the one number that answers "does this thing work" */}
       {calStats && (
         <div

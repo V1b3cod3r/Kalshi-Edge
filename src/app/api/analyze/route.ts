@@ -55,6 +55,12 @@ function extractPrediction(
     edge_pct,
     resolution_date: market.resolution_date,
     source: 'analyze',
+    // Deep analysis only produces a row when Claude recommends a concrete
+    // bet, so every row here is by definition actionable.
+    actionable: true,
+    market_yes_bid: market.yes_bid,
+    market_yes_ask: market.yes_ask ?? market.yes_price,
+    execution_price: exec,
   }
 }
 

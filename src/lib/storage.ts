@@ -1,6 +1,6 @@
 import fs from 'fs'
 import path from 'path'
-import { MacroView, SessionState, AppSettings, AutopilotSettings, AutopilotRun, Prediction, CalibrationStats, Lesson } from './types'
+import { MacroView, SessionState, AppSettings, AutopilotSettings, AutopilotRun, Prediction, CalibrationStats, EdgeBucketStats, Lesson } from './types'
 
 // Support DATA_DIR env var for cloud deployments (Railway mounts a volume here)
 const DATA_DIR = process.env.DATA_DIR ?? path.join(process.cwd(), 'data')
@@ -50,6 +50,9 @@ const DEFAULT_AUTOPILOT: AutopilotSettings = {
   min_resolved_predictions_for_live: 30,
   // Off at the user's explicit request — see AutopilotSettings comment.
   require_calibration_to_go_live: false,
+  kelly_haircut_high_pp: 3,
+  kelly_haircut_medium_pp: 5,
+  kelly_haircut_low_pp: 8,
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -287,6 +290,8 @@ export function getCalibrationStats(): CalibrationStats {
       analyze: { count: 0, brier: null, win_rate: null },
     },
     by_category: {},
+    by_edge_bucket: [],
+    market_brier_midpoint_samples: 0,
   }
 
   if (resolved.length === 0) return empty
@@ -305,28 +310,118 @@ export function getCalibrationStats(): CalibrationStats {
   const brier_score = brierSum / resolved.length
   const claude_brier = brier_score
 
-  // Market Brier score: (market_price - actual_outcome)^2
-  const resolvedWithMarket = resolved.filter((p) => p.market_price != null)
+  // Market Brier score: (market_prob - actual_outcome)^2.
+  //
+  // Score the market at its MIDPOINT where a two-sided quote was captured.
+  // market_price is the YES ASK, which is biased upward by half the spread —
+  // using it hands Claude free advantage on every observation. Prefer
+  // midpoint rows; fall back to ask-priced legacy rows only when no midpoint
+  // rows exist at all, and report the sample count so the UI can flag a
+  // fallback comparison as biased rather than presenting it as clean.
+  const marketProbOf = (p: Prediction): number | null => {
+    if (p.market_yes_bid != null && p.market_yes_ask != null) {
+      return (p.market_yes_bid + p.market_yes_ask) / 2
+    }
+    return null
+  }
+  const resolvedWithMidpoint = resolved.filter((p) => marketProbOf(p) != null)
+  const market_brier_midpoint_samples = resolvedWithMidpoint.length
+
   let market_brier: number | null = null
-  if (resolvedWithMarket.length > 0) {
-    const marketBrierSum = resolvedWithMarket.reduce((sum, p) => {
+  const brierAgainst = (rows: Prediction[], probOf: (p: Prediction) => number) => {
+    const sum = rows.reduce((acc, p) => {
       const actual = p.outcome === 'YES' ? 1 : 0
-      return sum + Math.pow(p.market_price - actual, 2)
+      return acc + Math.pow(probOf(p) - actual, 2)
     }, 0)
-    market_brier = parseFloat((marketBrierSum / resolvedWithMarket.length).toFixed(4))
+    return parseFloat((sum / rows.length).toFixed(4))
+  }
+  if (resolvedWithMidpoint.length > 0) {
+    market_brier = brierAgainst(resolvedWithMidpoint, (p) => marketProbOf(p)!)
+  } else {
+    const resolvedWithMarket = resolved.filter((p) => p.market_price != null)
+    if (resolvedWithMarket.length > 0) {
+      market_brier = brierAgainst(resolvedWithMarket, (p) => p.market_price)
+    }
   }
 
-  // Claude vs market comparison string
+  // Claude vs market comparison string.
+  //
+  // Compare on the SAME rows: scoring Claude over every resolved prediction
+  // while scoring the market over only the subset with a two-sided quote is
+  // not apples-to-apples and can flip the verdict on its own.
+  const comparisonRows = resolvedWithMidpoint.length > 0
+    ? resolvedWithMidpoint
+    : resolved.filter((p) => p.market_price != null)
+  const claudeBrierOnComparisonRows = comparisonRows.length > 0
+    ? brierAgainst(comparisonRows, (p) => p.predicted_probability)
+    : null
+
   let claude_vs_market: string
-  if (resolved.length < 10) {
-    claude_vs_market = 'Insufficient data'
-  } else if (market_brier === null) {
-    claude_vs_market = 'Insufficient data'
-  } else if (claude_brier < market_brier) {
-    claude_vs_market = `Claude beats market (${claude_brier.toFixed(2)} vs ${market_brier.toFixed(2)})`
+  if (comparisonRows.length < 10 || market_brier === null || claudeBrierOnComparisonRows === null) {
+    claude_vs_market = `Insufficient data (${comparisonRows.length}/10 comparable resolved predictions)`
   } else {
-    claude_vs_market = `Market beats Claude (${market_brier.toFixed(2)} vs ${claude_brier.toFixed(2)})`
+    const biasNote = resolvedWithMidpoint.length === 0
+      ? ' — NOTE: scored against the ask, not the midpoint; this flatters Claude by ~half the spread'
+      : ''
+    claude_vs_market = claudeBrierOnComparisonRows < market_brier
+      ? `Claude beats market (${claudeBrierOnComparisonRows.toFixed(3)} vs ${market_brier.toFixed(3)}, n=${comparisonRows.length})${biasNote}`
+      : `Market beats Claude (${market_brier.toFixed(3)} vs ${claudeBrierOnComparisonRows.toFixed(3)}, n=${comparisonRows.length})${biasNote}`
   }
+
+  // --- Realized ROI by claimed-edge bucket ---------------------------------
+  // The go/no-go metric. Computed purely from predictions + outcomes (no
+  // settlements join) so it works in dry-run, where nothing ever settles on
+  // Kalshi. Payoff per contract: win → (1 − entry), loss → −entry. ROI is
+  // Σpayoff / Σcost, i.e. return per dollar actually risked.
+  //
+  // Only `actionable` rows count: non-actionable rows were evaluated but
+  // never trade candidates, so including them would misstate trading returns.
+  // (Legacy rows predate the flag and were all actionable → treated as true.)
+  const EDGE_BUCKETS: Array<{ label: string; min: number; max: number }> = [
+    { label: '0-2%', min: -Infinity, max: 2 },
+    { label: '2-4%', min: 2, max: 4 },
+    { label: '4-6%', min: 4, max: 6 },
+    { label: '6-10%', min: 6, max: 10 },
+    { label: '10%+', min: 10, max: Infinity },
+  ]
+  const actionablePreds = predictions.filter((p) => p.actionable !== false)
+  const by_edge_bucket: EdgeBucketStats[] = EDGE_BUCKETS.map(({ label, min, max }) => {
+    const inBucket = actionablePreds.filter((p) => p.edge_pct >= min && p.edge_pct < max)
+    const settled = inBucket.filter((p) => p.outcome !== undefined)
+
+    let realized_roi_pct: number | null = null
+    let hit_rate: number | null = null
+    if (settled.length > 0) {
+      hit_rate = settled.filter((p) => p.direction === p.outcome).length / settled.length
+      // Entry price: prefer the recorded execution price; otherwise derive it
+      // from market_price (YES ask, so a NO entry costs 1 − that).
+      const priced = settled.filter((p) => {
+        const entry = p.execution_price ?? (p.direction === 'YES' ? p.market_price : 1 - p.market_price)
+        return Number.isFinite(entry) && entry > 0 && entry < 1
+      })
+      if (priced.length > 0) {
+        let cost = 0
+        let payoff = 0
+        for (const p of priced) {
+          const entry = p.execution_price ?? (p.direction === 'YES' ? p.market_price : 1 - p.market_price)
+          cost += entry
+          payoff += p.direction === p.outcome ? 1 - entry : -entry
+        }
+        realized_roi_pct = cost > 0 ? parseFloat(((payoff / cost) * 100).toFixed(1)) : null
+      }
+    }
+
+    return {
+      bucket: label,
+      count: inBucket.length,
+      resolved: settled.length,
+      claimed_edge_avg: inBucket.length > 0
+        ? parseFloat((inBucket.reduce((s, p) => s + p.edge_pct, 0) / inBucket.length).toFixed(2))
+        : 0,
+      realized_roi_pct,
+      hit_rate: hit_rate != null ? parseFloat(hit_rate.toFixed(3)) : null,
+    }
+  })
 
   // YES bias: mean predicted P(YES) minus observed YES rate
   // Positive = Claude systematically overestimates YES probability
@@ -399,6 +494,8 @@ export function getCalibrationStats(): CalibrationStats {
     recent_win_rate,
     by_source,
     by_category,
+    by_edge_bucket,
+    market_brier_midpoint_samples,
   }
 }
 

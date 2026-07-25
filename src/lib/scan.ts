@@ -125,6 +125,14 @@ export function normalizeMarket(m: any): MarketInput | null {
     title: String(title),
     yes_price,
     no_price,
+    // Raw quote sides for midpoint-based calibration scoring. yes_price above
+    // is the ASK; scoring the market at the ask hands Claude half the spread.
+    // Derive the bid the same defensive way the ask is derived.
+    yes_ask: yes_price,
+    yes_bid: yb > 0 ? yb : na > 0 ? parseFloat((1 - na).toFixed(4)) : undefined,
+    // Markets sharing an event are near-perfectly correlated — preferred over
+    // ticker-prefix heuristics for cluster caps. May be absent; consumers fall back.
+    event_ticker: m.event_ticker ? String(m.event_ticker) : undefined,
     volume_24h: Number(volume_24h) || 0,
     resolution_date: resolution_date ? String(resolution_date) : undefined,
     resolution_criteria: resolution_criteria ? String(resolution_criteria) : undefined,
@@ -748,7 +756,13 @@ export async function runScan(params: RunScanParams = {}): Promise<RunScanResult
           .filter((p) => p.outcome === undefined && p.ticker)
           .map((p) => tickerKey(p.ticker))
       )
-      for (const opp of opportunities) {
+      // Log EVERY evaluated market, not just the ones that cleared the edge
+      // filter. Logging only actionable rows meant the Claude-vs-market
+      // comparison was computed on a sample selected by the very disagreement
+      // it was trying to validate — a zero-skill model still looks
+      // distinctive under that selection. `scored` is the full pre-filter set.
+      const actionableTickers = new Set(opportunities.map((o) => tickerKey(o.ticker)))
+      for (const opp of scored) {
         if (!opp.ticker || !opp.direction || (opp.direction as string) === 'NO BET') continue
         if (pendingTickers.has(tickerKey(opp.ticker))) continue
         const market = marketByTicker.get(tickerKey(opp.ticker))
@@ -763,6 +777,11 @@ export async function runScan(params: RunScanParams = {}): Promise<RunScanResult
           edge_pct: opp.edge_pct ?? 0,
           resolution_date: market.resolution_date,
           source: 'scanner',
+          actionable: actionableTickers.has(tickerKey(opp.ticker)),
+          market_yes_bid: market.yes_bid,
+          market_yes_ask: market.yes_ask,
+          execution_price: opp.execution_price ?? undefined,
+          confidence: opp.confidence,
         })
         pendingTickers.add(tickerKey(opp.ticker))
       }

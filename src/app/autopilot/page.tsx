@@ -210,8 +210,15 @@ function RunRow({ run }: { run: AutopilotRun }) {
                             {label}
                           </span>
                         </td>
-                        <td className="px-3 py-2 font-mono" style={{ color: t.skip_reason ? '#64748b' : '#f1f5f9' }}>
-                          {t.ticker}
+                        <td className="px-3 py-2" style={{ maxWidth: '260px' }}>
+                          <div style={{ color: t.skip_reason ? '#64748b' : '#f1f5f9' }}>
+                            {t.title && t.title !== t.ticker ? t.title : t.ticker}
+                          </div>
+                          {t.title && t.title !== t.ticker && (
+                            <div className="font-mono" style={{ color: '#475569', fontSize: '10px' }}>
+                              {t.ticker}
+                            </div>
+                          )}
                         </td>
                         <td className="px-3 py-2 font-bold" style={{ color: t.side === 'yes' ? '#22c55e' : '#ef4444' }}>
                           {t.side.toUpperCase()}

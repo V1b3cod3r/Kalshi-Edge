@@ -287,10 +287,11 @@ export async function runAutopilotCycle(): Promise<AutopilotReport> {
           // To CLOSE a long you SELL the same side you hold, hitting its bid.
           const yesBid = bidPrice(market.yes_bid_dollars, market.yes_bid)
           const noBid = bidPrice(market.no_bid_dollars, market.no_bid)
+          const marketTitle = typeof market.title === 'string' && market.title ? market.title : ticker
           const sellPrice = isYes ? yesBid : noBid
           if (!Number.isFinite(sellPrice) || sellPrice <= 0 || sellPrice >= 1) {
             report.trades.push({
-              ticker, title: ticker, side, intent: 'sell',
+              ticker, title: marketTitle, side, intent: 'sell',
               contracts: count, price: 0, cost: 0,
               effective_edge_pct: 0, kelly_stake: 0, executed: false,
               skip_reason: 'No live bid to sell into',
@@ -317,7 +318,7 @@ export async function runAutopilotCycle(): Promise<AutopilotReport> {
 
           const sellTrade: AutopilotTrade = {
             ticker,
-            title: ticker,
+            title: marketTitle,
             side,
             intent: 'sell',
             contracts: count,

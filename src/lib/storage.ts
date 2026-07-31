@@ -301,6 +301,108 @@ export function getCalibrationStats(): CalibrationStats {
   const predictions = getPredictions()
   const resolved = predictions.filter((p) => p.outcome !== undefined)
 
+  // --- Realized ROI by claimed-edge bucket, and by ORIGIN strategy --------
+  // Computed BEFORE the resolved-count gate below, on purpose: these should
+  // show every LOGGED (actionable) prediction and how many have resolved —
+  // "5 logged, 0 resolved yet" — not disappear entirely just because nothing
+  // has settled. A brand-new strategy that hasn't had time to resolve a
+  // single trade would otherwise show zero rows anywhere on the Predictions
+  // page, indistinguishable from "isn't logging anything at all."
+  //
+  // Payoff per contract: win → (1 − entry), loss → −entry. ROI is
+  // Σpayoff / Σcost, i.e. return per dollar actually risked. Computed purely
+  // from predictions + outcomes (no settlements join) so it works in
+  // dry-run, where nothing ever settles on Kalshi.
+  //
+  // Only `actionable` rows count: non-actionable rows were evaluated but
+  // never trade candidates, so including them would misstate trading returns.
+  // (Legacy rows predate the flag and were all actionable → treated as true.)
+  const EDGE_BUCKETS: Array<{ label: string; min: number; max: number }> = [
+    { label: '0-2%', min: -Infinity, max: 2 },
+    { label: '2-4%', min: 2, max: 4 },
+    { label: '4-6%', min: 4, max: 6 },
+    { label: '6-10%', min: 6, max: 10 },
+    { label: '10%+', min: 10, max: Infinity },
+  ]
+  const actionablePreds = predictions.filter((p) => p.actionable !== false)
+
+  // Shared by both by_edge_bucket and by_strategy below — the exact same
+  // payoff math, computed once. Duplicating this a second time is exactly
+  // how a fee/field bug independently recurs across call sites.
+  function computeRoiStats(rows: Prediction[]): { resolved: number; realized_roi_pct: number | null; hit_rate: number | null; brier: number | null } {
+    const settled = rows.filter((p) => p.outcome !== undefined)
+    if (settled.length === 0) {
+      return { resolved: 0, realized_roi_pct: null, hit_rate: null, brier: null }
+    }
+    const hit_rate = settled.filter((p) => p.direction === p.outcome).length / settled.length
+    const brierSum = settled.reduce((s, p) => {
+      const actual = p.outcome === 'YES' ? 1 : 0
+      return s + Math.pow(p.predicted_probability - actual, 2)
+    }, 0)
+    const brier = parseFloat((brierSum / settled.length).toFixed(4))
+
+    // Entry price: prefer the recorded execution price; otherwise derive it
+    // from market_price (YES ask, so a NO entry costs 1 − that).
+    const entryOf = (p: Prediction) => p.execution_price ?? (p.direction === 'YES' ? p.market_price : 1 - p.market_price)
+    const priced = settled.filter((p) => {
+      const entry = entryOf(p)
+      return Number.isFinite(entry) && entry > 0 && entry < 1
+    })
+    let realized_roi_pct: number | null = null
+    if (priced.length > 0) {
+      let cost = 0
+      let payoff = 0
+      for (const p of priced) {
+        const entry = entryOf(p)
+        cost += entry
+        payoff += p.direction === p.outcome ? 1 - entry : -entry
+      }
+      realized_roi_pct = cost > 0 ? parseFloat(((payoff / cost) * 100).toFixed(1)) : null
+    }
+
+    return {
+      resolved: settled.length,
+      realized_roi_pct,
+      hit_rate: parseFloat(hit_rate.toFixed(3)),
+      brier,
+    }
+  }
+
+  const by_edge_bucket: EdgeBucketStats[] = EDGE_BUCKETS.map(({ label, min, max }) => {
+    const inBucket = actionablePreds.filter((p) => p.edge_pct >= min && p.edge_pct < max)
+    const roi = computeRoiStats(inBucket)
+    return {
+      bucket: label,
+      count: inBucket.length,
+      resolved: roi.resolved,
+      claimed_edge_avg: inBucket.length > 0
+        ? parseFloat((inBucket.reduce((s, p) => s + p.edge_pct, 0) / inBucket.length).toFixed(2))
+        : 0,
+      realized_roi_pct: roi.realized_roi_pct,
+      hit_rate: roi.hit_rate,
+    }
+  })
+
+  // Realized ROI by ORIGIN strategy — the strategy-registry go/no-go
+  // metric. Same actionable-only, same payoff math, grouped by `strategy`
+  // instead of claimed edge. Legacy rows (no strategy tag) predate the
+  // registry and were all the LLM scanner.
+  const strategyNames = Array.from(
+    new Set(actionablePreds.map((p) => p.strategy ?? 'llm-divergence'))
+  ).sort()
+  const by_strategy: StrategyStats[] = strategyNames.map((name) => {
+    const inStrategy = actionablePreds.filter((p) => (p.strategy ?? 'llm-divergence') === name)
+    const roi = computeRoiStats(inStrategy)
+    return {
+      strategy: name,
+      count: inStrategy.length,
+      resolved: roi.resolved,
+      hit_rate: roi.hit_rate,
+      realized_roi_pct: roi.realized_roi_pct,
+      brier: roi.brier,
+    }
+  })
+
   const empty: CalibrationStats = {
     total_predictions: predictions.length,
     resolved_predictions: resolved.length,
@@ -317,9 +419,9 @@ export function getCalibrationStats(): CalibrationStats {
       analyze: { count: 0, brier: null, win_rate: null },
     },
     by_category: {},
-    by_edge_bucket: [],
+    by_edge_bucket,
     market_brier_midpoint_samples: 0,
-    by_strategy: [],
+    by_strategy,
   }
 
   if (resolved.length === 0) return empty
@@ -395,101 +497,6 @@ export function getCalibrationStats(): CalibrationStats {
       ? `Claude beats market (${claudeBrierOnComparisonRows.toFixed(3)} vs ${market_brier.toFixed(3)}, n=${comparisonRows.length})${biasNote}`
       : `Market beats Claude (${market_brier.toFixed(3)} vs ${claudeBrierOnComparisonRows.toFixed(3)}, n=${comparisonRows.length})${biasNote}`
   }
-
-  // --- Realized ROI by claimed-edge bucket ---------------------------------
-  // The go/no-go metric. Computed purely from predictions + outcomes (no
-  // settlements join) so it works in dry-run, where nothing ever settles on
-  // Kalshi. Payoff per contract: win → (1 − entry), loss → −entry. ROI is
-  // Σpayoff / Σcost, i.e. return per dollar actually risked.
-  //
-  // Only `actionable` rows count: non-actionable rows were evaluated but
-  // never trade candidates, so including them would misstate trading returns.
-  // (Legacy rows predate the flag and were all actionable → treated as true.)
-  const EDGE_BUCKETS: Array<{ label: string; min: number; max: number }> = [
-    { label: '0-2%', min: -Infinity, max: 2 },
-    { label: '2-4%', min: 2, max: 4 },
-    { label: '4-6%', min: 4, max: 6 },
-    { label: '6-10%', min: 6, max: 10 },
-    { label: '10%+', min: 10, max: Infinity },
-  ]
-  const actionablePreds = predictions.filter((p) => p.actionable !== false)
-
-  // Shared by both by_edge_bucket and by_strategy below — the exact same
-  // payoff math, computed once. Duplicating this a second time is exactly
-  // how a fee/field bug independently recurs across call sites.
-  function computeRoiStats(rows: Prediction[]): { resolved: number; realized_roi_pct: number | null; hit_rate: number | null; brier: number | null } {
-    const settled = rows.filter((p) => p.outcome !== undefined)
-    if (settled.length === 0) {
-      return { resolved: 0, realized_roi_pct: null, hit_rate: null, brier: null }
-    }
-    const hit_rate = settled.filter((p) => p.direction === p.outcome).length / settled.length
-    const brierSum = settled.reduce((s, p) => {
-      const actual = p.outcome === 'YES' ? 1 : 0
-      return s + Math.pow(p.predicted_probability - actual, 2)
-    }, 0)
-    const brier = parseFloat((brierSum / settled.length).toFixed(4))
-
-    // Entry price: prefer the recorded execution price; otherwise derive it
-    // from market_price (YES ask, so a NO entry costs 1 − that).
-    const entryOf = (p: Prediction) => p.execution_price ?? (p.direction === 'YES' ? p.market_price : 1 - p.market_price)
-    const priced = settled.filter((p) => {
-      const entry = entryOf(p)
-      return Number.isFinite(entry) && entry > 0 && entry < 1
-    })
-    let realized_roi_pct: number | null = null
-    if (priced.length > 0) {
-      let cost = 0
-      let payoff = 0
-      for (const p of priced) {
-        const entry = entryOf(p)
-        cost += entry
-        payoff += p.direction === p.outcome ? 1 - entry : -entry
-      }
-      realized_roi_pct = cost > 0 ? parseFloat(((payoff / cost) * 100).toFixed(1)) : null
-    }
-
-    return {
-      resolved: settled.length,
-      realized_roi_pct,
-      hit_rate: parseFloat(hit_rate.toFixed(3)),
-      brier,
-    }
-  }
-
-  const by_edge_bucket: EdgeBucketStats[] = EDGE_BUCKETS.map(({ label, min, max }) => {
-    const inBucket = actionablePreds.filter((p) => p.edge_pct >= min && p.edge_pct < max)
-    const roi = computeRoiStats(inBucket)
-    return {
-      bucket: label,
-      count: inBucket.length,
-      resolved: roi.resolved,
-      claimed_edge_avg: inBucket.length > 0
-        ? parseFloat((inBucket.reduce((s, p) => s + p.edge_pct, 0) / inBucket.length).toFixed(2))
-        : 0,
-      realized_roi_pct: roi.realized_roi_pct,
-      hit_rate: roi.hit_rate,
-    }
-  })
-
-  // --- Realized ROI by ORIGIN strategy — the strategy-registry go/no-go
-  // metric. Same actionable-only, same payoff math, grouped by `strategy`
-  // instead of claimed edge. Legacy rows (no strategy tag) predate the
-  // registry and were all the LLM scanner.
-  const strategyNames = Array.from(
-    new Set(actionablePreds.map((p) => p.strategy ?? 'llm-divergence'))
-  ).sort()
-  const by_strategy: StrategyStats[] = strategyNames.map((name) => {
-    const inStrategy = actionablePreds.filter((p) => (p.strategy ?? 'llm-divergence') === name)
-    const roi = computeRoiStats(inStrategy)
-    return {
-      strategy: name,
-      count: inStrategy.length,
-      resolved: roi.resolved,
-      hit_rate: roi.hit_rate,
-      realized_roi_pct: roi.realized_roi_pct,
-      brier: roi.brier,
-    }
-  })
 
   // YES bias: mean predicted P(YES) minus observed YES rate
   // Positive = Claude systematically overestimates YES probability

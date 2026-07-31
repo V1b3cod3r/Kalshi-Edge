@@ -1,6 +1,6 @@
 import fs from 'fs'
 import path from 'path'
-import { MacroView, SessionState, AppSettings, AutopilotSettings, AutopilotRun, Prediction, CalibrationStats, EdgeBucketStats, Lesson } from './types'
+import { MacroView, SessionState, AppSettings, AutopilotSettings, AutopilotRun, Prediction, CalibrationStats, EdgeBucketStats, StrategyStats, Lesson } from './types'
 
 // Support DATA_DIR env var for cloud deployments (Railway mounts a volume here)
 const DATA_DIR = process.env.DATA_DIR ?? path.join(process.cwd(), 'data')
@@ -68,6 +68,18 @@ const DEFAULT_AUTOPILOT: AutopilotSettings = {
   // maker/post_only cuts the fee 4x (or to zero on some series) at the cost
   // of fill-rate uncertainty — a real tradeoff, so not assumed on by default.
   use_maker_orders: false,
+
+  // Strategy registry — see docs/STRATEGY_EXPANSION_PLAN.md. Original
+  // scanner on; both brand-new mechanical strategies off until reviewed.
+  strategy_llm_divergence_enabled: true,
+  strategy_dated_favorites_enabled: false,
+  dated_favorites_min_price_cents: 65,
+  dated_favorites_max_price_cents: 90,
+  dated_favorites_min_days: 14,
+  dated_favorites_max_days: 56,
+  strategy_settlement_snipe_enabled: false,
+  settlement_snipe_margin_f: 2,
+  settlement_snipe_max_confidence_pct: 95,
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -307,6 +319,7 @@ export function getCalibrationStats(): CalibrationStats {
     by_category: {},
     by_edge_bucket: [],
     market_brier_midpoint_samples: 0,
+    by_strategy: [],
   }
 
   if (resolved.length === 0) return empty
@@ -400,41 +413,81 @@ export function getCalibrationStats(): CalibrationStats {
     { label: '10%+', min: 10, max: Infinity },
   ]
   const actionablePreds = predictions.filter((p) => p.actionable !== false)
-  const by_edge_bucket: EdgeBucketStats[] = EDGE_BUCKETS.map(({ label, min, max }) => {
-    const inBucket = actionablePreds.filter((p) => p.edge_pct >= min && p.edge_pct < max)
-    const settled = inBucket.filter((p) => p.outcome !== undefined)
 
+  // Shared by both by_edge_bucket and by_strategy below — the exact same
+  // payoff math, computed once. Duplicating this a second time is exactly
+  // how a fee/field bug independently recurs across call sites.
+  function computeRoiStats(rows: Prediction[]): { resolved: number; realized_roi_pct: number | null; hit_rate: number | null; brier: number | null } {
+    const settled = rows.filter((p) => p.outcome !== undefined)
+    if (settled.length === 0) {
+      return { resolved: 0, realized_roi_pct: null, hit_rate: null, brier: null }
+    }
+    const hit_rate = settled.filter((p) => p.direction === p.outcome).length / settled.length
+    const brierSum = settled.reduce((s, p) => {
+      const actual = p.outcome === 'YES' ? 1 : 0
+      return s + Math.pow(p.predicted_probability - actual, 2)
+    }, 0)
+    const brier = parseFloat((brierSum / settled.length).toFixed(4))
+
+    // Entry price: prefer the recorded execution price; otherwise derive it
+    // from market_price (YES ask, so a NO entry costs 1 − that).
+    const entryOf = (p: Prediction) => p.execution_price ?? (p.direction === 'YES' ? p.market_price : 1 - p.market_price)
+    const priced = settled.filter((p) => {
+      const entry = entryOf(p)
+      return Number.isFinite(entry) && entry > 0 && entry < 1
+    })
     let realized_roi_pct: number | null = null
-    let hit_rate: number | null = null
-    if (settled.length > 0) {
-      hit_rate = settled.filter((p) => p.direction === p.outcome).length / settled.length
-      // Entry price: prefer the recorded execution price; otherwise derive it
-      // from market_price (YES ask, so a NO entry costs 1 − that).
-      const priced = settled.filter((p) => {
-        const entry = p.execution_price ?? (p.direction === 'YES' ? p.market_price : 1 - p.market_price)
-        return Number.isFinite(entry) && entry > 0 && entry < 1
-      })
-      if (priced.length > 0) {
-        let cost = 0
-        let payoff = 0
-        for (const p of priced) {
-          const entry = p.execution_price ?? (p.direction === 'YES' ? p.market_price : 1 - p.market_price)
-          cost += entry
-          payoff += p.direction === p.outcome ? 1 - entry : -entry
-        }
-        realized_roi_pct = cost > 0 ? parseFloat(((payoff / cost) * 100).toFixed(1)) : null
+    if (priced.length > 0) {
+      let cost = 0
+      let payoff = 0
+      for (const p of priced) {
+        const entry = entryOf(p)
+        cost += entry
+        payoff += p.direction === p.outcome ? 1 - entry : -entry
       }
+      realized_roi_pct = cost > 0 ? parseFloat(((payoff / cost) * 100).toFixed(1)) : null
     }
 
     return {
+      resolved: settled.length,
+      realized_roi_pct,
+      hit_rate: parseFloat(hit_rate.toFixed(3)),
+      brier,
+    }
+  }
+
+  const by_edge_bucket: EdgeBucketStats[] = EDGE_BUCKETS.map(({ label, min, max }) => {
+    const inBucket = actionablePreds.filter((p) => p.edge_pct >= min && p.edge_pct < max)
+    const roi = computeRoiStats(inBucket)
+    return {
       bucket: label,
       count: inBucket.length,
-      resolved: settled.length,
+      resolved: roi.resolved,
       claimed_edge_avg: inBucket.length > 0
         ? parseFloat((inBucket.reduce((s, p) => s + p.edge_pct, 0) / inBucket.length).toFixed(2))
         : 0,
-      realized_roi_pct,
-      hit_rate: hit_rate != null ? parseFloat(hit_rate.toFixed(3)) : null,
+      realized_roi_pct: roi.realized_roi_pct,
+      hit_rate: roi.hit_rate,
+    }
+  })
+
+  // --- Realized ROI by ORIGIN strategy — the strategy-registry go/no-go
+  // metric. Same actionable-only, same payoff math, grouped by `strategy`
+  // instead of claimed edge. Legacy rows (no strategy tag) predate the
+  // registry and were all the LLM scanner.
+  const strategyNames = Array.from(
+    new Set(actionablePreds.map((p) => p.strategy ?? 'llm-divergence'))
+  ).sort()
+  const by_strategy: StrategyStats[] = strategyNames.map((name) => {
+    const inStrategy = actionablePreds.filter((p) => (p.strategy ?? 'llm-divergence') === name)
+    const roi = computeRoiStats(inStrategy)
+    return {
+      strategy: name,
+      count: inStrategy.length,
+      resolved: roi.resolved,
+      hit_rate: roi.hit_rate,
+      realized_roi_pct: roi.realized_roi_pct,
+      brier: roi.brier,
     }
   })
 
@@ -511,6 +564,7 @@ export function getCalibrationStats(): CalibrationStats {
     by_category,
     by_edge_bucket,
     market_brier_midpoint_samples,
+    by_strategy,
   }
 }
 

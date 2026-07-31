@@ -368,6 +368,15 @@ export default function AutopilotPage() {
       min_resolved_predictions_for_live: form.min_resolved_predictions_for_live,
       require_calibration_to_go_live: form.require_calibration_to_go_live,
       use_maker_orders: form.use_maker_orders,
+      strategy_llm_divergence_enabled: form.strategy_llm_divergence_enabled,
+      strategy_dated_favorites_enabled: form.strategy_dated_favorites_enabled,
+      dated_favorites_min_price_cents: form.dated_favorites_min_price_cents,
+      dated_favorites_max_price_cents: form.dated_favorites_max_price_cents,
+      dated_favorites_min_days: form.dated_favorites_min_days,
+      dated_favorites_max_days: form.dated_favorites_max_days,
+      strategy_settlement_snipe_enabled: form.strategy_settlement_snipe_enabled,
+      settlement_snipe_margin_f: form.settlement_snipe_margin_f,
+      settlement_snipe_max_confidence_pct: form.settlement_snipe_max_confidence_pct,
     })
     if (ok) showToast('Guardrails saved', 'success')
   }
@@ -760,6 +769,104 @@ export default function AutopilotPage() {
               />
             </div>
           </div>
+
+          {/* Strategy registry — every strategy funnels through the same
+              guardrails above, tagged by name for per-strategy P&L on the
+              Predictions page. See docs/STRATEGY_EXPANSION_PLAN.md. */}
+          <div className="col-span-2 md:col-span-3 mt-2 pt-4" style={{ borderTop: '1px solid #2a2a3e' }}>
+            <label style={{ ...labelStyle, marginBottom: '2px' }}>Strategies</label>
+            <p className="text-xs mb-3" style={{ color: '#64748b' }}>
+              Every enabled strategy shares the guardrails above (edge threshold, confidence, exposure caps, Kelly
+              sizing). Realized ROI per strategy shows up on the Predictions page once trades resolve.
+            </p>
+          </div>
+
+          <div className="col-span-2 md:col-span-3">
+            <div className="flex items-center justify-between py-2">
+              <div>
+                <div className="text-sm font-medium" style={{ color: '#f1f5f9' }}>LLM divergence</div>
+                <p className="text-xs" style={{ color: '#64748b' }}>
+                  The original scanner. Claude estimates a probability, shrunk toward the market price.
+                </p>
+              </div>
+              <Toggle
+                on={form.strategy_llm_divergence_enabled}
+                onClick={() => setForm({ ...form, strategy_llm_divergence_enabled: !form.strategy_llm_divergence_enabled })}
+                color="#6366f1"
+              />
+            </div>
+
+            <div className="flex items-center justify-between py-2" style={{ borderTop: '1px solid #1a1a28' }}>
+              <div>
+                <div className="text-sm font-medium" style={{ color: '#f1f5f9' }}>Dated favorites (opt-in, new)</div>
+                <p className="text-xs" style={{ color: '#64748b' }}>
+                  Mechanical, no LLM call: buy the favorite side priced in a band, dated a few weeks out, hold to
+                  resolution. Backed by published research on horizon-dependent mispricing — not validated in
+                  production yet.
+                </p>
+              </div>
+              <Toggle
+                on={form.strategy_dated_favorites_enabled}
+                onClick={() => setForm({ ...form, strategy_dated_favorites_enabled: !form.strategy_dated_favorites_enabled })}
+                color="#22c55e"
+              />
+            </div>
+            {form.strategy_dated_favorites_enabled && (
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 pb-3 pl-3">
+                <div>
+                  <label style={labelStyle}>Favorite band min ¢</label>
+                  <input type="number" min={50} max={99} step={1} value={form.dated_favorites_min_price_cents}
+                    onChange={(e) => setForm({ ...form, dated_favorites_min_price_cents: parseFloat(e.target.value) || 0 })} style={inputStyle} />
+                </div>
+                <div>
+                  <label style={labelStyle}>Favorite band max ¢</label>
+                  <input type="number" min={50} max={99} step={1} value={form.dated_favorites_max_price_cents}
+                    onChange={(e) => setForm({ ...form, dated_favorites_max_price_cents: parseFloat(e.target.value) || 0 })} style={inputStyle} />
+                </div>
+                <div>
+                  <label style={labelStyle}>Min days out</label>
+                  <input type="number" min={1} step={1} value={form.dated_favorites_min_days}
+                    onChange={(e) => setForm({ ...form, dated_favorites_min_days: parseFloat(e.target.value) || 0 })} style={inputStyle} />
+                </div>
+                <div>
+                  <label style={labelStyle}>Max days out</label>
+                  <input type="number" min={1} step={1} value={form.dated_favorites_max_days}
+                    onChange={(e) => setForm({ ...form, dated_favorites_max_days: parseFloat(e.target.value) || 0 })} style={inputStyle} />
+                </div>
+              </div>
+            )}
+
+            <div className="flex items-center justify-between py-2" style={{ borderTop: '1px solid #1a1a28' }}>
+              <div>
+                <div className="text-sm font-medium" style={{ color: '#f1f5f9' }}>Settlement sniping (opt-in, new)</div>
+                <p className="text-xs" style={{ color: '#64748b' }}>
+                  Mechanical, no LLM call: buys today&apos;s weather markets once the live-observed high/low already
+                  clears the strike by a safety margin. Only NYC/LAX (verified station codes). Not validated in
+                  production yet.
+                </p>
+              </div>
+              <Toggle
+                on={form.strategy_settlement_snipe_enabled}
+                onClick={() => setForm({ ...form, strategy_settlement_snipe_enabled: !form.strategy_settlement_snipe_enabled })}
+                color="#22c55e"
+              />
+            </div>
+            {form.strategy_settlement_snipe_enabled && (
+              <div className="grid grid-cols-2 gap-3 pb-3 pl-3">
+                <div>
+                  <label style={labelStyle}>Safety margin °F</label>
+                  <input type="number" min={0.5} step={0.5} value={form.settlement_snipe_margin_f}
+                    onChange={(e) => setForm({ ...form, settlement_snipe_margin_f: parseFloat(e.target.value) || 0 })} style={inputStyle} />
+                </div>
+                <div>
+                  <label style={labelStyle}>Max confidence %</label>
+                  <input type="number" min={50} max={99} step={1} value={form.settlement_snipe_max_confidence_pct}
+                    onChange={(e) => setForm({ ...form, settlement_snipe_max_confidence_pct: parseFloat(e.target.value) || 0 })} style={inputStyle} />
+                </div>
+              </div>
+            )}
+          </div>
+
           {/* Kelly confidence haircut — sizes from a conservative LOWER BOUND
               on win probability rather than the point estimate, because Kelly
               is hypersensitive to error in p. Higher = smaller bets. */}

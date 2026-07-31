@@ -216,6 +216,61 @@ export default function PredictionsPage() {
         </div>
       )}
 
+      {/* Realized ROI by ORIGIN strategy — the strategy-registry go/no-go
+          metric. "Which of my edges actually earns money" as a table, not a
+          feeling. See docs/STRATEGY_EXPANSION_PLAN.md. */}
+      {calStats?.by_strategy && calStats.by_strategy.some((s) => s.count > 0) && (
+        <div className="rounded-xl border p-6 mb-6" style={{ backgroundColor: '#12121a', borderColor: '#1e1e2e' }}>
+          <div className="text-xs font-medium uppercase tracking-wider mb-1" style={{ color: '#64748b' }}>
+            Realized Return by Strategy
+          </div>
+          <p className="text-xs mb-4" style={{ color: '#475569' }}>
+            Every trade is tagged with the strategy that found it. This is how you tell whether a strategy
+            is actually earning before scaling it up — or should be turned off.
+          </p>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr style={{ backgroundColor: '#0d0d17' }}>
+                  <th className="px-3 py-2 text-left" style={{ color: '#64748b' }}>Strategy</th>
+                  <th className="px-3 py-2 text-right" style={{ color: '#64748b' }}>Predictions</th>
+                  <th className="px-3 py-2 text-right" style={{ color: '#64748b' }}>Resolved</th>
+                  <th className="px-3 py-2 text-right" style={{ color: '#64748b' }}>Hit rate</th>
+                  <th className="px-3 py-2 text-right" style={{ color: '#64748b' }}>Brier</th>
+                  <th className="px-3 py-2 text-right" style={{ color: '#64748b' }}>Realized ROI</th>
+                </tr>
+              </thead>
+              <tbody>
+                {calStats.by_strategy.map((s) => (
+                  <tr key={s.strategy} style={{ borderTop: '1px solid #1a1a28' }}>
+                    <td className="px-3 py-2 font-mono" style={{ color: '#f1f5f9' }}>{s.strategy}</td>
+                    <td className="px-3 py-2 text-right" style={{ color: '#94a3b8' }}>{s.count}</td>
+                    <td className="px-3 py-2 text-right" style={{ color: '#94a3b8' }}>{s.resolved}</td>
+                    <td className="px-3 py-2 text-right" style={{ color: '#94a3b8' }}>
+                      {s.hit_rate != null ? `${Math.round(s.hit_rate * 100)}%` : '—'}
+                    </td>
+                    <td className="px-3 py-2 text-right" style={{ color: '#94a3b8' }}>
+                      {s.brier != null ? s.brier.toFixed(3) : '—'}
+                    </td>
+                    <td
+                      className="px-3 py-2 text-right font-bold"
+                      style={{ color: s.realized_roi_pct == null ? '#475569' : s.realized_roi_pct > 0 ? '#22c55e' : '#ef4444' }}
+                    >
+                      {s.realized_roi_pct != null ? `${s.realized_roi_pct > 0 ? '+' : ''}${s.realized_roi_pct}%` : '—'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {calStats.by_strategy.every((s) => s.resolved === 0) && (
+            <p className="text-xs mt-3" style={{ color: '#64748b' }}>
+              No predictions have resolved yet — ROI fills in as markets settle.
+            </p>
+          )}
+        </div>
+      )}
+
       {/* Claude vs Market — the one number that answers "does this thing work" */}
       {calStats && (
         <div

@@ -69,6 +69,12 @@ export interface Prediction {
   // never settle on Kalshi and would otherwise be invisible.
   execution_price?: number
   confidence?: 'LOW' | 'MEDIUM' | 'HIGH'
+  // Which strategy produced this prediction — 'llm-divergence' |
+  // 'dated-favorites' | 'settlement-snipe' | ... Undefined on legacy rows
+  // (all pre-registry rows were the LLM scanner). The entire mechanism
+  // behind per-strategy P&L attribution — see getCalibrationStats'
+  // by_strategy breakdown and docs/STRATEGY_EXPANSION_PLAN.md.
+  strategy?: string
 }
 
 // Realized performance grouped by the edge we CLAIMED at entry. This is the
@@ -82,6 +88,19 @@ export interface EdgeBucketStats {
   claimed_edge_avg: number          // mean claimed edge (pp)
   realized_roi_pct: number | null   // Σ payoff / Σ cost × 100; null until resolved > 0
   hit_rate: number | null           // fraction where direction was correct
+}
+
+// Realized performance grouped by ORIGIN strategy — the entire point of the
+// strategy registry (docs/STRATEGY_EXPANSION_PLAN.md). "Which of my edges
+// actually earns money" answered as a GROUP BY over data that already
+// exists, not a separate subsystem.
+export interface StrategyStats {
+  strategy: string                  // 'llm-divergence' | 'dated-favorites' | 'settlement-snipe' | ...
+  count: number                     // actionable predictions from this strategy
+  resolved: number                  // of those, how many have settled
+  hit_rate: number | null
+  realized_roi_pct: number | null   // Σ payoff / Σ cost × 100; null until resolved > 0
+  brier: number | null              // resolved-only; null until resolved > 0
 }
 
 export interface Lesson {
@@ -146,6 +165,29 @@ export interface AutopilotSettings {
   // for fill-rate uncertainty. Sell/exit orders always stay taker — a timely
   // exit matters more there than the fee difference.
   use_maker_orders: boolean
+
+  // --- Strategy registry (see docs/STRATEGY_EXPANSION_PLAN.md) -------------
+  // Every strategy funnels through the SAME guardrail/Kelly/logging pipeline
+  // below, tagged by name — the tag is what makes per-strategy P&L
+  // attribution possible in getCalibrationStats' by_strategy breakdown.
+
+  // default true — the original LLM-divergence scanner, formalized as one
+  // registry entry rather than special-cased. Nothing about running it
+  // changes; this toggle exists so it can be turned OFF to run only the
+  // mechanical strategies below, e.g. while validating them independently.
+  strategy_llm_divergence_enabled: boolean
+  // default false (opt-in, brand new, unvalidated in production). Mechanical
+  // price × horizon rule — see datedFavorites.ts. No LLM call.
+  strategy_dated_favorites_enabled: boolean
+  dated_favorites_min_price_cents: number // default 65
+  dated_favorites_max_price_cents: number // default 90
+  dated_favorites_min_days: number        // default 14
+  dated_favorites_max_days: number        // default 56
+  // default false (opt-in, brand new, unvalidated in production). Live
+  // weather-observation-vs-strike rule — see settlementSnipe.ts. No LLM call.
+  strategy_settlement_snipe_enabled: boolean
+  settlement_snipe_margin_f: number            // default 2 — required °F cushion before firing
+  settlement_snipe_max_confidence_pct: number  // default 95 — hard cap on the reported probability
 }
 
 export interface AppSettings {
@@ -180,6 +222,10 @@ export interface AutopilotTrade {
   skip_reason?: string
   intent?: 'buy' | 'sell'    // default 'buy' when absent (back-compat)
   exit_reason?: string       // 'take_profit' human text, set on sells
+  // Which strategy produced this trade — 'llm-divergence' | 'dated-favorites'
+  // | 'settlement-snipe' | 'exit-management' (sells) | undefined (legacy
+  // rows, all pre-registry rows were the LLM scanner).
+  strategy?: string
 }
 
 export interface AutopilotRun {
@@ -217,6 +263,8 @@ export interface CalibrationStats {
   // against the market MIDPOINT). When 0, market_brier fell back to the
   // ask-priced legacy baseline and the comparison is biased toward Claude.
   market_brier_midpoint_samples: number
+  // Realized P&L grouped by ORIGIN strategy — see StrategyStats.
+  by_strategy: StrategyStats[]
 }
 
 export interface MarketInput {

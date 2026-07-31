@@ -166,3 +166,62 @@ describe('realized ROI by claimed-edge bucket', () => {
     expect(bucket.resolved).toBe(1)
   })
 })
+
+describe('realized ROI by ORIGIN strategy (strategy registry)', () => {
+  it('groups predictions by strategy tag and computes ROI/hit-rate/brier per group', async () => {
+    seedPredictions([
+      // dated-favorites: one win at 80c entry -> payoff +0.20, cost 0.80 -> ROI +25%
+      {
+        ...base, id: 'df1', ticker: 'DF1', predicted_probability: 0.9, direction: 'YES',
+        outcome: 'YES', edge_pct: 5, market_price: 0.8, execution_price: 0.8, actionable: true,
+        strategy: 'dated-favorites',
+      },
+      // llm-divergence: one loss at 50c entry -> payoff -0.50, cost 0.50 -> ROI -100%
+      {
+        ...base, id: 'll1', ticker: 'LL1', predicted_probability: 0.7, direction: 'YES',
+        outcome: 'NO', edge_pct: 5, market_price: 0.5, execution_price: 0.5, actionable: true,
+        strategy: 'llm-divergence',
+      },
+    ])
+    const { getCalibrationStats } = await import('@/lib/storage')
+    const by = getCalibrationStats().by_strategy
+
+    const df = by.find((s) => s.strategy === 'dated-favorites')!
+    expect(df.count).toBe(1)
+    expect(df.resolved).toBe(1)
+    expect(df.hit_rate).toBeCloseTo(1, 3)
+    expect(df.realized_roi_pct).toBeCloseTo(25, 1)
+
+    const llm = by.find((s) => s.strategy === 'llm-divergence')!
+    expect(llm.count).toBe(1)
+    expect(llm.hit_rate).toBeCloseTo(0, 3)
+    expect(llm.realized_roi_pct).toBeCloseTo(-100, 1)
+  })
+
+  it('groups legacy rows with no strategy field under llm-divergence — the only strategy that existed before the registry', async () => {
+    seedPredictions([
+      {
+        ...base, id: 'legacy', ticker: 'LEG', predicted_probability: 0.7, direction: 'YES',
+        outcome: 'YES', edge_pct: 5, market_price: 0.5, execution_price: 0.5, actionable: true,
+        // no strategy field at all
+      },
+    ])
+    const { getCalibrationStats } = await import('@/lib/storage')
+    const by = getCalibrationStats().by_strategy
+    expect(by.map((s) => s.strategy)).toEqual(['llm-divergence'])
+    expect(by[0].count).toBe(1)
+  })
+
+  it('excludes non-actionable rows from strategy ROI, same as the edge-bucket breakdown', async () => {
+    seedPredictions([
+      {
+        ...base, id: 'a', ticker: 'A', predicted_probability: 0.7, direction: 'YES',
+        outcome: 'NO', edge_pct: 5, market_price: 0.5, execution_price: 0.5, actionable: false,
+        strategy: 'settlement-snipe',
+      },
+    ])
+    const { getCalibrationStats } = await import('@/lib/storage')
+    const by = getCalibrationStats().by_strategy
+    expect(by.find((s) => s.strategy === 'settlement-snipe')).toBeUndefined()
+  })
+})

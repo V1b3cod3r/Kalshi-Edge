@@ -18,8 +18,11 @@ import {
   settlementProfitDollars,
   KalshiAuth,
 } from '@/lib/kalshi'
-import { runScan, ScanOpportunity, kalshiFeeCoef } from '@/lib/scan'
+import { runScan, kalshiFeeCoef } from '@/lib/scan'
 import { AutopilotRun, AutopilotTrade } from '@/lib/types'
+import { StrategyOpportunity } from '@/lib/strategies/types'
+import { datedFavoritesOpportunities } from '@/lib/strategies/datedFavorites'
+import { settlementSnipeOpportunities } from '@/lib/strategies/settlementSnipe'
 
 // ---------------------------------------------------------------------------
 // Autopilot: nearly-autonomous trade execution with hard, code-enforced
@@ -295,7 +298,7 @@ export async function runAutopilotCycle(): Promise<AutopilotReport> {
           const market = await fetchMarket(auth, ticker).catch(() => null)
           if (!market) {
             report.trades.push({
-              ticker, title: ticker, side, intent: 'sell',
+              ticker, title: ticker, side, intent: 'sell', strategy: 'exit-management',
               contracts: count, price: 0, cost: 0,
               effective_edge_pct: 0, kelly_stake: 0, executed: false,
               skip_reason: 'Could not fetch live quote',
@@ -310,7 +313,7 @@ export async function runAutopilotCycle(): Promise<AutopilotReport> {
           const sellPrice = isYes ? yesBid : noBid
           if (!Number.isFinite(sellPrice) || sellPrice <= 0 || sellPrice >= 1) {
             report.trades.push({
-              ticker, title: marketTitle, side, intent: 'sell',
+              ticker, title: marketTitle, side, intent: 'sell', strategy: 'exit-management',
               contracts: count, price: 0, cost: 0,
               effective_edge_pct: 0, kelly_stake: 0, executed: false,
               skip_reason: 'No live bid to sell into',
@@ -342,6 +345,7 @@ export async function runAutopilotCycle(): Promise<AutopilotReport> {
             title: marketTitle,
             side,
             intent: 'sell',
+            strategy: 'exit-management',
             contracts: count,
             price: sellPrice,
             cost: parseFloat((count * sellPrice).toFixed(2)),
@@ -382,6 +386,7 @@ export async function runAutopilotCycle(): Promise<AutopilotReport> {
             title: String(pos.ticker),
             side: positionSignedQuantity(pos) > 0 ? 'yes' : 'no',
             intent: 'sell',
+            strategy: 'exit-management',
             contracts: Math.abs(positionSignedQuantity(pos)),
             price: 0,
             cost: 0,
@@ -394,32 +399,81 @@ export async function runAutopilotCycle(): Promise<AutopilotReport> {
       }
     }
 
-    // c. Run the shared market scan pipeline. Autopilot logs its own
-    // predictions for executed trades, so suppress the scanner's logging.
-    // Scanning more markets never loosens a safety gate — it only gives the
-    // confidence/edge/cluster filters more candidates to choose from. A breadth
-    // of 15 statistically surfaced ~0 tradeable opportunities; 40 matches the
-    // manual scanner's sweet spot.
-    const scan = await runScan({
-      limit: ap.scan_limit ?? 40,
-      min_volume: 0,
-      // No artificial ceiling here — an earlier version capped this at 0.07
-      // regardless of the configured guardrail, which silently undermined any
-      // min_effective_edge_pct set above 7% (the scan-level filter runs BEFORE
-      // evaluateOpportunity, so opportunities never even reached the guardrail
-      // check). The guardrail is the intended single source of truth for this
-      // threshold; the scan filter must match it exactly, not undercut it.
-      min_effective_edge: ap.min_effective_edge_pct / 100,
-      max_days_to_resolution: ap.max_days_to_resolution,
-      logPredictions: false,
-    })
-    report.markets_scanned = scan.markets_scanned
-    report.opportunities_considered = scan.opportunities.length
+    // c. Registry: gather opportunities from every enabled strategy, each
+    // tagged with its origin — the entire mechanism behind per-strategy P&L
+    // attribution (see getCalibrationStats' by_strategy breakdown). Every
+    // strategy funnels through the SAME guardrail/Kelly/logging pipeline
+    // below. One strategy's failure must never abort the cycle or the others.
+    const strategyOpportunities: StrategyOpportunity[] = []
+    let marketsScanned = 0
+    let llmScreenedOut: { ticker: string; title: string; reason: string; direction?: 'YES' | 'NO'; edge_pct?: number }[] = []
+
+    if (ap.strategy_llm_divergence_enabled !== false) {
+      // Autopilot logs its own predictions for executed trades, so suppress
+      // the scanner's own logging. Scanning more markets never loosens a
+      // safety gate — it only gives the confidence/edge/cluster filters more
+      // candidates to choose from. A breadth of 15 statistically surfaced ~0
+      // tradeable opportunities; 40 matches the manual scanner's sweet spot.
+      const scan = await runScan({
+        limit: ap.scan_limit ?? 40,
+        min_volume: 0,
+        // No artificial ceiling here — an earlier version capped this at 0.07
+        // regardless of the configured guardrail, which silently undermined any
+        // min_effective_edge_pct set above 7% (the scan-level filter runs BEFORE
+        // evaluateOpportunity, so opportunities never even reached the guardrail
+        // check). The guardrail is the intended single source of truth for this
+        // threshold; the scan filter must match it exactly, not undercut it.
+        min_effective_edge: ap.min_effective_edge_pct / 100,
+        max_days_to_resolution: ap.max_days_to_resolution,
+        logPredictions: false,
+      })
+      marketsScanned = scan.markets_scanned
+      llmScreenedOut = scan.screened_out ?? []
+      for (const o of scan.opportunities) {
+        strategyOpportunities.push({
+          strategy: 'llm-divergence',
+          ticker: o.ticker,
+          title: o.title,
+          direction: o.direction,
+          execution_price: o.execution_price ?? o.yes_price ?? 0,
+          edge_pct: o.edge_pct,
+          p_shrunk: o.p_shrunk,
+          confidence: o.confidence,
+          category: o.category,
+          resolution_date: o.resolution_date,
+          rationale: o.rationale,
+          raw_probability: (o.my_estimate_pct ?? 50) / 100,
+        })
+      }
+    }
+
+    if (ap.strategy_dated_favorites_enabled) {
+      try {
+        strategyOpportunities.push(...(await datedFavoritesOpportunities(ap)))
+      } catch {
+        // mechanical strategies are best-effort — a fetch failure this cycle
+        // just means zero candidates from this strategy, never an aborted cycle
+      }
+    }
+
+    if (ap.strategy_settlement_snipe_enabled) {
+      try {
+        strategyOpportunities.push(...(await settlementSnipeOpportunities(ap)))
+      } catch {
+        // same as above
+      }
+    }
+
+    report.markets_scanned = marketsScanned
+    report.opportunities_considered = strategyOpportunities.length
 
     const minConfidenceRank = CONFIDENCE_RANK[ap.min_confidence] ?? CONFIDENCE_RANK.HIGH
 
-    // d. Evaluate each opportunity against filters + guardrails, best edge first.
-    for (const opp of scan.opportunities) {
+    // d. Evaluate each opportunity against filters + guardrails, best edge
+    // first regardless of which strategy found it — capital-efficiency, not
+    // strategy identity, decides who gets first claim on limited headroom.
+    strategyOpportunities.sort((a, b) => b.edge_pct - a.edge_pct)
+    for (const opp of strategyOpportunities) {
       const decision = evaluateOpportunity(opp, {
         ap,
         minConfidenceRank,
@@ -487,18 +541,24 @@ export async function runAutopilotCycle(): Promise<AutopilotReport> {
         })
         report.trades.push({ ...trade, executed: true, order_id: order.order_id })
 
-        // Record the prediction for calibration tracking (best-effort)
+        // Record the prediction for calibration tracking (best-effort).
+        // predicted_probability prefers raw_probability (Claude's UNSHRUNK
+        // self-report, llm-divergence only) so calibration measures the
+        // model's own calibration, not the blended trading decision — see
+        // STRATEGY_PLAN.md Phase 1. Mechanical strategies have no separate
+        // raw estimate; p_shrunk IS the belief there.
         try {
           createPrediction({
             market_title: opp.title,
             ticker: opp.ticker,
             category: opp.category,
-            predicted_probability: (opp.my_estimate_pct ?? 50) / 100,
+            predicted_probability: opp.raw_probability ?? opp.p_shrunk,
             direction: opp.direction,
-            market_price: opp.yes_price ?? trade.price,
+            market_price: trade.price,
             edge_pct: opp.edge_pct,
             resolution_date: opp.resolution_date ?? undefined,
             source: 'autopilot',
+            strategy: opp.strategy,
           })
         } catch {
           // prediction logging is non-critical
@@ -526,7 +586,7 @@ export async function runAutopilotCycle(): Promise<AutopilotReport> {
       (t) => t.intent !== 'sell' && !t.skip_reason
     )
     if (!executedOrQueuedBuys) {
-      const nearMisses = (scan.screened_out ?? [])
+      const nearMisses = llmScreenedOut
         .filter((s) => /effective edge/i.test(s.reason))
         .slice(0, 5)
       for (const nm of nearMisses) {
@@ -545,6 +605,7 @@ export async function runAutopilotCycle(): Promise<AutopilotReport> {
           kelly_stake: 0,
           executed: false,
           skip_reason: `Near miss — ${nm.reason}`,
+          strategy: 'llm-divergence',
         })
       }
     }
@@ -585,7 +646,7 @@ type Decision =
 
 // Pure decision function: given one opportunity and the current guardrail
 // state, either produce a sized trade or a logged skip reason. Never throws.
-function evaluateOpportunity(opp: ScanOpportunity, ctx: GuardrailContext): Decision {
+function evaluateOpportunity(opp: StrategyOpportunity, ctx: GuardrailContext): Decision {
   const { ap } = ctx
   const side: 'yes' | 'no' = opp.direction === 'YES' ? 'yes' : 'no'
 
@@ -601,6 +662,7 @@ function evaluateOpportunity(opp: ScanOpportunity, ctx: GuardrailContext): Decis
       kelly_stake: 0,
       executed: false,
       skip_reason: reason,
+      strategy: opp.strategy,
       ...extra,
     },
   })
@@ -724,6 +786,7 @@ function evaluateOpportunity(opp: ScanOpportunity, ctx: GuardrailContext): Decis
       effective_edge_pct: opp.edge_pct,
       kelly_stake: parseFloat(kellyStake.toFixed(2)),
       executed: false, // caller sets true after a live order succeeds
+      strategy: opp.strategy,
     },
   }
 }

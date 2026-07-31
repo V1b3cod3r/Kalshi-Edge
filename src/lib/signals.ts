@@ -631,10 +631,12 @@ const WEATHER_CITIES: Array<{ match: string; label: string; lat: number; lon: nu
 // KXTEMP<CITY><H|L> (e.g. KXTEMPNYCH, KXTEMPLAXH) — an exact, unambiguous city
 // signal, unlike guessing from however the title happens to phrase the city
 // name. Populated only with codes actually observed in the wild; add more as
-// they're confirmed rather than guessing unverified station codes.
-const TEMP_TICKER_CITY_CODES: Record<string, { label: string; lat: number; lon: number }> = {
-  NYC: { label: 'New York', lat: 40.71, lon: -74.01 },
-  LAX: { label: 'Los Angeles', lat: 34.05, lon: -118.24 },
+// they're confirmed rather than guessing unverified station codes. Exported
+// so the settlement-snipe strategy (strategies/settlementSnipe.ts) shares the
+// SAME verified list rather than maintaining a second one.
+export const TEMP_TICKER_CITY_CODES: Record<string, { label: string; lat: number; lon: number; tz: string }> = {
+  NYC: { label: 'New York', lat: 40.71, lon: -74.01, tz: 'America/New_York' },
+  LAX: { label: 'Los Angeles', lat: 34.05, lon: -118.24, tz: 'America/Los_Angeles' },
 }
 
 /**

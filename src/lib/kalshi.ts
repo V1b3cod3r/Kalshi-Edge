@@ -212,11 +212,21 @@ export interface PlaceOrderRequest {
   action?: 'buy' | 'sell' // default 'buy'; 'sell' closes a held position on the same side
   client_order_id?: string
   // Unix seconds after which Kalshi cancels the order server-side if unfilled.
-  // Autopilot prices orders at the current ask expecting an immediate fill —
-  // without this, a marketable order that doesn't fill (price moved, thin
-  // book) rests indefinitely, silently tying up spend/exposure headroom that
-  // the next cycle still counts as spent.
+  // Autopilot prices TAKER orders at the current ask expecting an immediate
+  // fill — without this, a marketable order that doesn't fill (price moved,
+  // thin book) rests indefinitely, silently tying up spend/exposure headroom
+  // that the next cycle still counts as spent. Combined with postOnly below,
+  // this instead bounds how long a resting MAKER order is allowed to rest.
   expiration_ts?: number
+  // Rest on the book instead of crossing the spread — a maker order, priced
+  // at (or better than) the current bid, never a taker. Kalshi charges 1/4
+  // the taker fee on maker fills (0.0175 vs 0.07 × P×(1−P)), or nothing at
+  // all on series with no maker fee. FIELD NAME UNVERIFIED against a live
+  // response — inferred from Kalshi's documented order capabilities, not
+  // confirmed by a real 200/400. If Kalshi rejects this shape, the order
+  // 400s (fails safe, no money moves) — capture the exact error text and fix
+  // the field name here, same pattern as the V1→V2 migration.
+  postOnly?: boolean
 }
 
 export interface PlaceOrderResult {
@@ -265,13 +275,27 @@ function toV2OrderBody(req: PlaceOrderRequest): Record<string, any> {
     // price gets the same treatment on the same struct — send both as strings.
     count: String(req.count),
     price: (yesPriceCents / 100).toFixed(2), // dollars, penny-granular, as string
-    time_in_force: req.expiration_ts ? 'immediate_or_cancel' : 'good_till_canceled',
+    // A post_only order must never immediate_or_cancel — IOC means "fill now
+    // or die" and post_only means "never take", which are contradictory. It
+    // rests good_till_canceled, bounded by expiration_ts if given (a "good
+    // till time" window) rather than truly indefinite.
+    time_in_force: req.postOnly
+      ? 'good_till_canceled'
+      : req.expiration_ts ? 'immediate_or_cancel' : 'good_till_canceled',
     // Confirmed required by a live 400 (Go 'required' validation tag). Two
     // options exist: "taker_at_cross" cancels OUR incoming order if it would
     // cross our own resting order; "maker" cancels the resting one instead.
     // taker_at_cross is the documented default and the safer choice for an
     // automated system — it never touches an order already resting/working.
     self_trade_prevention_type: 'taker_at_cross',
+  }
+  // expiration_time only makes sense on a resting (post_only) order — an IOC
+  // order never rests, so time_in_force alone already communicates "now or
+  // never" and adding a redundant expiration field to it risks conflicting
+  // with the taker path that's been confirmed working in production.
+  if (req.postOnly) {
+    body.post_only = true
+    if (req.expiration_ts) body.expiration_time = req.expiration_ts
   }
   return body
 }

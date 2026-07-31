@@ -74,22 +74,33 @@ export function clusterForTicker(ticker: string, title?: string): string {
   return ticker.slice(0, 4).toUpperCase()
 }
 
-// Orders are priced at the current ask expecting an immediate fill (see the
-// buy loop below) — 60s is generous headroom for that, not a resting window.
-// Anything still open after this either filled seconds ago (harmless no-op
-// cancel) or the price moved away, in which case it should never sit forever
-// silently consuming spend/exposure headroom.
+// TAKER orders are priced at the current ask expecting an immediate fill —
+// 60s is generous headroom for that, not a resting window. Anything still
+// open after this either filled seconds ago (harmless no-op cancel) or the
+// price moved away, in which case it should never sit forever silently
+// consuming spend/exposure headroom.
 const ORDER_EXPIRATION_SECONDS = 60
+
+// MAKER (post_only) orders are meant to rest — that's the whole point, it's
+// how they earn the maker fee instead of the taker fee. This bounds how long,
+// so an order that never becomes marketable doesn't tie up spend/exposure
+// headroom indefinitely. 10 minutes is a deliberately short "lean" window:
+// long enough to catch a normal price wobble, short enough that headroom
+// self-corrects within roughly one cycle if it never fills.
+const MAKER_ORDER_EXPIRATION_SECONDS = 600
 
 // Reconciliation safety net: cancel any order still resting from a prior
 // cycle (crash, timeout, expiration_ts not honored by an older order) before
 // this cycle's balance/exposure snapshot is taken. Best-effort — a failure
 // here must never block the cycle; the exit pass and guardrails already
-// protect capital even if a stray order lingers.
+// protect capital even if a stray order lingers. Cutoff is set past the
+// maker expiration window so a legitimately-still-resting maker order isn't
+// cancelled early — Kalshi's own expiration_time is the primary bound;
+// this is the belt-and-suspenders backstop for orders it doesn't honor.
 async function reconcileStaleOrders(auth: KalshiAuth): Promise<void> {
   try {
     const orders = await getOpenOrders(auth)
-    const staleCutoffMs = Date.now() - 5 * 60 * 1000
+    const staleCutoffMs = Date.now() - (MAKER_ORDER_EXPIRATION_SECONDS + 5 * 60) * 1000
     for (const o of orders) {
       const createdMs = Date.parse(o.created_time ?? '')
       if (Number.isFinite(createdMs) && createdMs > staleCutoffMs) continue
@@ -426,7 +437,33 @@ export async function runAutopilotCycle(): Promise<AutopilotReport> {
         continue
       }
 
-      const trade = decision.trade
+      let trade = decision.trade
+
+      // MAKER MODE (opt-in): reprice at the current bid and rest as
+      // post_only instead of crossing at the scan-time ask. Contracts stay
+      // sized off the ask (the conservative upper bound from evaluateOpportunity
+      // above) — filling at a lower bid price only means less capital is
+      // actually spent than budgeted, never more, so every headroom check
+      // already performed above remains valid. A live quote is required to
+      // price this correctly; if it can't be fetched, skip the trade rather
+      // than silently falling back to a taker fill the user opted out of.
+      if (ap.use_maker_orders) {
+        const market = await fetchMarket(auth, trade.ticker).catch(() => null)
+        const bid = market
+          ? trade.side === 'yes'
+            ? bidPrice(market.yes_bid_dollars, market.yes_bid)
+            : bidPrice(market.no_bid_dollars, market.no_bid)
+          : 0
+        const bidCents = Math.round(bid * 100)
+        if (!market || !Number.isFinite(bid) || bidCents < 1 || bidCents > 99) {
+          report.trades.push({
+            ...trade, contracts: 0, price: 0, cost: 0, executed: false,
+            skip_reason: 'Maker mode: no live bid to rest an order against',
+          })
+          continue
+        }
+        trade = { ...trade, price: bid, cost: parseFloat((trade.contracts * bid).toFixed(2)) }
+      }
 
       if (ap.dry_run) {
         // Dry run: log the would-be order, place nothing, but still consume
@@ -434,15 +471,19 @@ export async function runAutopilotCycle(): Promise<AutopilotReport> {
         // live cycle would actually have done.
         report.trades.push({ ...trade, executed: false })
       } else {
-        // LIVE: place a limit order at the ask. Cents conversion happens here,
-        // at the API boundary, and nowhere else.
+        // LIVE: place a limit order. Taker crosses at the scan-time ask
+        // (immediate_or_cancel); maker rests at the just-fetched bid
+        // (post_only, bounded by MAKER_ORDER_EXPIRATION_SECONDS). Cents
+        // conversion happens here, at the API boundary, and nowhere else.
         const priceCents = Math.round(trade.price * 100)
         const order = await placeOrder(auth, {
           ticker: trade.ticker,
           side: trade.side,
           count: trade.contracts,
           price_cents: priceCents,
-          expiration_ts: Math.floor(Date.now() / 1000) + ORDER_EXPIRATION_SECONDS,
+          postOnly: ap.use_maker_orders,
+          expiration_ts: Math.floor(Date.now() / 1000) +
+            (ap.use_maker_orders ? MAKER_ORDER_EXPIRATION_SECONDS : ORDER_EXPIRATION_SECONDS),
         })
         report.trades.push({ ...trade, executed: true, order_id: order.order_id })
 

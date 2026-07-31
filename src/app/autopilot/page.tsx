@@ -367,6 +367,7 @@ export default function AutopilotPage() {
       max_days_to_resolution: form.max_days_to_resolution,
       min_resolved_predictions_for_live: form.min_resolved_predictions_for_live,
       require_calibration_to_go_live: form.require_calibration_to_go_live,
+      use_maker_orders: form.use_maker_orders,
     })
     if (ok) showToast('Guardrails saved', 'success')
   }
@@ -738,6 +739,24 @@ export default function AutopilotPage() {
                 on={form.exit_enabled}
                 onClick={() => setForm({ ...form, exit_enabled: !form.exit_enabled })}
                 color="#3b82f6"
+              />
+            </div>
+          </div>
+          {/* Maker orders — rest at the bid instead of crossing at the ask */}
+          <div className="col-span-2 md:col-span-3 mt-2 pt-4" style={{ borderTop: '1px solid #2a2a3e' }}>
+            <div className="flex items-center justify-between">
+              <div>
+                <label style={{ ...labelStyle, marginBottom: '2px' }}>Maker orders (opt-in)</label>
+                <p className="text-xs" style={{ color: '#64748b' }}>
+                  Rest buy orders at the current bid instead of crossing the spread at the ask — Kalshi charges makers
+                  1/4 the taker fee (or none, on some series). Trades fee savings for fill-rate risk: an order that
+                  never becomes marketable expires unfilled after 10 minutes instead of filling instantly.
+                </p>
+              </div>
+              <Toggle
+                on={form.use_maker_orders}
+                onClick={() => setForm({ ...form, use_maker_orders: !form.use_maker_orders })}
+                color="#22c55e"
               />
             </div>
           </div>

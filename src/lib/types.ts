@@ -137,6 +137,15 @@ export interface AutopilotSettings {
   kelly_haircut_high_pp: number    // default 3
   kelly_haircut_medium_pp: number  // default 5
   kelly_haircut_low_pp: number     // default 8
+  // default false (opt-in). When true, BUY orders rest at the current bid as
+  // post_only (maker) instead of crossing at the ask as immediate_or_cancel
+  // (taker) — Kalshi's maker fee is 1/4 the taker fee (or zero on some
+  // series). Off by default because it changes fill behavior: a maker order
+  // can go unfilled and expire (see MAKER_ORDER_EXPIRATION_SECONDS in
+  // autopilot.ts) rather than filling immediately, so it trades fee savings
+  // for fill-rate uncertainty. Sell/exit orders always stay taker — a timely
+  // exit matters more there than the fee difference.
+  use_maker_orders: boolean
 }
 
 export interface AppSettings {

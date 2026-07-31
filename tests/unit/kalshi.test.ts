@@ -328,6 +328,28 @@ describe('V2 order translation (__toV2OrderBody) — REAL MONEY, direction-criti
     expect(gtc.time_in_force).toBe('good_till_canceled')
   })
 
+  it('postOnly rests good_till_canceled even when expiration_ts is set — never IOC', async () => {
+    // IOC ("fill now or die") and post_only ("never take") are contradictory;
+    // a maker order must always rest, with expiration_ts (if given) bounding
+    // HOW LONG it rests via expiration_time, not switching it to IOC.
+    const { __toV2OrderBody } = await import('@/lib/kalshi')
+    const body = __toV2OrderBody({
+      ticker: 'T', side: 'yes', count: 1, price_cents: 40,
+      expiration_ts: 999, postOnly: true,
+    })
+    expect(body.time_in_force).toBe('good_till_canceled')
+    expect(body.post_only).toBe(true)
+    expect(body.expiration_time).toBe(999)
+  })
+
+  it('omits post_only and expiration_time entirely for a plain taker order', async () => {
+    const { __toV2OrderBody } = await import('@/lib/kalshi')
+    const body = __toV2OrderBody({ ticker: 'T', side: 'yes', count: 1, price_cents: 40, expiration_ts: 999 })
+    expect(body).not.toHaveProperty('post_only')
+    expect(body).not.toHaveProperty('expiration_time')
+    expect(body.time_in_force).toBe('immediate_or_cancel')
+  })
+
   it('always includes self_trade_prevention_type (confirmed required by a live 400)', async () => {
     const { __toV2OrderBody } = await import('@/lib/kalshi')
     const body = __toV2OrderBody({ ticker: 'T', side: 'yes', count: 1, price_cents: 50 })

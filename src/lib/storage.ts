@@ -63,6 +63,11 @@ const DEFAULT_AUTOPILOT: AutopilotSettings = {
   kelly_haircut_high_pp: 3,
   kelly_haircut_medium_pp: 5,
   kelly_haircut_low_pp: 8,
+  // Off by default (opt-in). Kalshi's taker economics (300k+ contracts
+  // studied) average ~32% loss; makers average ~10%. Resting buy orders as
+  // maker/post_only cuts the fee 4x (or to zero on some series) at the cost
+  // of fill-rate uncertainty — a real tradeoff, so not assumed on by default.
+  use_maker_orders: false,
 }
 
 const DEFAULT_SETTINGS: AppSettings = {

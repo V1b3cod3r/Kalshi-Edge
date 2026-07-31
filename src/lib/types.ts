@@ -104,7 +104,7 @@ export interface Lesson {
 export interface AutopilotSettings {
   enabled: boolean                 // master switch, default false
   dry_run: boolean                 // default true — log decisions, place NO orders
-  min_effective_edge_pct: number   // default 7
+  min_effective_edge_pct: number   // default 15 — set at the measured calibration floor, see scan.ts MIN_EFFECTIVE_EDGE
   min_confidence: 'MEDIUM' | 'HIGH' // default 'HIGH'
   max_per_trade_usd: number        // default 25
   max_daily_spend_usd: number      // default 100
@@ -115,9 +115,11 @@ export interface AutopilotSettings {
   category_blacklist: string[]     // default ['Sports']
   max_per_cluster_usd: number      // default 50 — correlation cluster cap
   scan_limit: number               // default 40 — how many markets each cycle analyzes (breadth, not risk)
-  exit_enabled: boolean            // default true — manage open positions each cycle
+  // default false — a live-money study found stop-losses and take-profits
+  // both destroyed value vs. hold-to-resolution on binary contracts. See
+  // DEFAULT_AUTOPILOT in storage.ts for the full reasoning.
+  exit_enabled: boolean
   take_profit_pct: number          // default 40 — sell when position up >= this % of entry cost
-  stop_loss_pct: number            // default 50 — sell when position down >= this % of entry cost
   max_days_to_resolution: number   // default 45 — skip markets resolving further out than this (capital velocity + faster calibration feedback)
   min_resolved_predictions_for_live: number // default 30 — live orders blocked until this many predictions have resolved AND Claude beats the market's Brier score on this history
   // default false — at the user's explicit request, live trading is NOT
@@ -168,7 +170,7 @@ export interface AutopilotTrade {
   order_id?: string
   skip_reason?: string
   intent?: 'buy' | 'sell'    // default 'buy' when absent (back-compat)
-  exit_reason?: string       // 'take_profit' | 'stop_loss' human text, set on sells
+  exit_reason?: string       // 'take_profit' human text, set on sells
 }
 
 export interface AutopilotRun {

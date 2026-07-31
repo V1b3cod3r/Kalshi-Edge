@@ -155,7 +155,8 @@ describe('POST /api/auto-scan', () => {
     mockKalshiMarkets([
       { ticker: 'FED-DEC', title: 'Fed cut December', yes_ask: 45, yes_bid: 43, volume_24h: 5000 },
     ])
-    mockClaudeScan([{ ticker: 'FED-DEC', estimate: 75 }])
+    // estimate 80% (not 75%) so the recomputed edge clears the 12% floor.
+    mockClaudeScan([{ ticker: 'FED-DEC', estimate: 80 }])
 
     vi.resetModules()
     const { POST } = await import('@/app/api/auto-scan/route')
@@ -171,11 +172,11 @@ describe('POST /api/auto-scan', () => {
     // the yes bid and understate cost): 1 − 0.43 = 0.57
     expect(data.opportunities[0].no_price).toBeCloseTo(0.57, 2)
     // Effective edge is recomputed in code, never taken from Claude:
-    // p_shrunk = 0.6×0.45 + 0.4×0.75 = 0.57
+    // p_shrunk = 0.6×0.45 + 0.4×0.80 = 0.59
     // fee = 0.07 × 0.45 × 0.55 = 0.017325
-    // edge = (0.57 − 0.45 − 0.017325) × 100 = 10.27 (2dp)
-    expect(data.opportunities[0].edge_pct).toBeCloseTo(10.27, 2)
-    expect(data.opportunities[0].p_shrunk).toBeCloseTo(0.57, 6)
+    // edge = (0.59 − 0.45 − 0.017325) × 100 = 12.27 (2dp)
+    expect(data.opportunities[0].edge_pct).toBeCloseTo(12.27, 2)
+    expect(data.opportunities[0].p_shrunk).toBeCloseTo(0.59, 6)
     expect(data.opportunities[0].execution_price).toBeCloseTo(0.45, 6)
   })
 
@@ -216,7 +217,8 @@ describe('POST /api/auto-scan', () => {
       { ticker: 'EXTREME-LOW', title: 'Near zero', yes_ask: 2, yes_bid: 1, volume_24h: 1000 },
       { ticker: 'NORMAL', title: 'Normal market', yes_ask: 45, yes_bid: 43, volume_24h: 5000 },
     ])
-    mockClaudeScan([{ ticker: 'NORMAL', estimate: 75 }])
+    // estimate 85% so the recomputed edge clears the 12% floor.
+    mockClaudeScan([{ ticker: 'NORMAL', estimate: 85 }])
 
     vi.resetModules()
     const { POST } = await import('@/app/api/auto-scan/route')
@@ -242,7 +244,8 @@ describe('POST /api/auto-scan', () => {
       { ticker: 'EXTREME-HIGH', title: 'Near certain', yes_ask: 98, yes_bid: 97, volume_24h: 1000 },
       { ticker: 'NORMAL', title: 'Normal market', yes_ask: 55, yes_bid: 53, volume_24h: 5000 },
     ])
-    mockClaudeScan([{ ticker: 'NORMAL', estimate: 80 }])
+    // estimate 90% (not 80%) so the recomputed edge clears the 12% floor.
+    mockClaudeScan([{ ticker: 'NORMAL', estimate: 90 }])
 
     vi.resetModules()
     const { POST } = await import('@/app/api/auto-scan/route')
@@ -270,7 +273,8 @@ describe('POST /api/auto-scan', () => {
       { ticker: 'LOW-VOL', title: 'Low volume', yes_ask: 45, yes_bid: 43, volume_24h: 100 },
       { ticker: 'HIGH-VOL', title: 'High volume', yes_ask: 55, yes_bid: 53, volume_24h: 5000 },
     ])
-    mockClaudeScan([{ ticker: 'HIGH-VOL', estimate: 80 }])
+    // estimate 90% (not 80%) so the recomputed edge clears the 12% floor.
+    mockClaudeScan([{ ticker: 'HIGH-VOL', estimate: 90 }])
 
     vi.resetModules()
     const { POST } = await import('@/app/api/auto-scan/route')
@@ -326,7 +330,7 @@ describe('POST /api/auto-scan', () => {
       { ticker: 'WEAK', title: 'Weak edge market', yes_ask: 50, yes_bid: 48, volume_24h: 5000 },
     ])
     // estimate 55%: p_shrunk = 0.6×0.50 + 0.4×0.55 = 0.52
-    // edge = (0.52 − 0.50 − 0.07×0.5×0.5) × 100 = 0.25% < 2.5% threshold
+    // edge = (0.52 − 0.50 − 0.07×0.5×0.5) × 100 = 0.25% < 12% threshold
     mockClaudeScan([{ ticker: 'WEAK', estimate: 55 }])
 
     vi.resetModules()
@@ -359,7 +363,7 @@ describe('POST /api/auto-scan', () => {
       { ticker: 'NOCASE', title: 'A NO-direction market', yes_ask: 60, yes_bid: 58, volume_24h: 5000 },
     ])
     // p_shrunk = 0.6×0.60 + 0.4×0.55 = 0.58; NO ask (derived) = 1−0.58 = 0.42
-    // raw_edge = (1−0.58) − 0.42 = 0.00; minus fee (~1.7%) → below the 2.5%
+    // raw_edge = (1−0.58) − 0.42 = 0.00; minus fee (~1.7%) → below the 12%
     // threshold, so this is a screened-out NEAR MISS on the NO side.
     const scanJson = JSON.stringify({
       opportunities: [{

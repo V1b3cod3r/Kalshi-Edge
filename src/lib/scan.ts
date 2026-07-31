@@ -241,14 +241,32 @@ const SCAN_JSON_SCHEMA = {
 // Shrinkage: 60% market / 40% Claude (conservative until calibration proves otherwise)
 export const SHRINK_MARKET = 0.60
 export const SHRINK_CLAUDE = 0.40
-// Kalshi fee coefficient: fee = 0.07 × P × (1−P) per contract
+// Kalshi taker fee coefficient: fee = 0.07 × P × (1−P) per contract. This is
+// the TAKER rate — every order this app places crosses the spread (IOC), so
+// it is the correct default. Kalshi halves it on S&P/Nasdaq range markets.
 export const KALSHI_FEE_COEF = 0.07
-// Default minimum effective edge after fees and shrinkage. Calibrated to the
-// SHRUNK scale: effective edge ≈ 0.4 × raw disagreement − fee, so 2.5pp here
-// still requires Claude to disagree with the market by ~10-11pp and clears
-// all trading costs. (The old 7pp default demanded a ~22pp disagreement —
-// mathematically near-impossible, which produced permanently empty scans.)
-export const MIN_EFFECTIVE_EDGE = 0.025
+// S&P 500 (INX*) and Nasdaq-100 (NASDAQ100*) series get a halved taker fee
+// coefficient per Kalshi's published fee schedule. Applying the standard
+// 0.07 to these series overcharges the edge calc 2x and needlessly screens
+// out otherwise-tradeable opportunities on exactly the series most amenable
+// to a mechanical (options-implied-vol) pricing model.
+export function kalshiFeeCoef(ticker: string | undefined | null): number {
+  const t = String(ticker ?? '').toUpperCase()
+  if (t.startsWith('INX') || t.startsWith('NASDAQ100')) return 0.035
+  return KALSHI_FEE_COEF
+}
+// Default minimum effective edge after fees and shrinkage, in fraction terms
+// (0.12 = 12pp). Set at the calibration floor, not a hopeful guess: KalshiBench
+// (300 real Kalshi questions, 5 frontier models) measured Claude Opus 4.5 —
+// the best of the five — at ECE 0.120 on genuinely-unknown future events.
+// A "3pp divergence from market" threshold is smaller than the model's own
+// measured calibration error, which means it is mostly sampling that error,
+// not detecting real mispricing. This floor doesn't guarantee edge is real
+// above it, but below it the "edge" is indistinguishable from calibration
+// noise by construction. Re-tune from YOUR OWN measured ECE once you have
+// enough resolved predictions (getCalibrationStats) — do not lower this
+// without first measuring your own reliability curve.
+export const MIN_EFFECTIVE_EDGE = 0.12
 
 export interface ScanProgressEvent {
   phase: 'fetching' | 'filtering' | 'analyzing'
@@ -688,8 +706,9 @@ export async function runScan(params: RunScanParams = {}): Promise<RunScanResult
       const no_ask = market.no_price
       const execution_price = opp.direction === 'YES' ? yes_ask : no_ask
 
-      // Kalshi fee: 0.07 × P × (1−P) where P is execution price
-      const fee = KALSHI_FEE_COEF * execution_price * (1 - execution_price)
+      // Kalshi fee: coefficient × P × (1−P) where P is execution price.
+      // Coefficient is halved on S&P/Nasdaq (INX*/NASDAQ100*) series.
+      const fee = kalshiFeeCoef(opp.ticker) * execution_price * (1 - execution_price)
 
       // Effective edge: shrunk estimate vs execution price, minus fee
       const raw_edge = opp.direction === 'YES'

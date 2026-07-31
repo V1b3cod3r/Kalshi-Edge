@@ -109,7 +109,6 @@ function tradeRowColor(t: AutopilotTrade): { color: string; label: string } {
 
 function exitReasonLabel(reason: string | undefined): string {
   if (reason === 'take_profit') return 'Take Profit'
-  if (reason === 'stop_loss') return 'Stop Loss'
   return reason ?? ''
 }
 
@@ -361,7 +360,6 @@ export default function AutopilotPage() {
       max_per_cluster_usd: form.max_per_cluster_usd,
       exit_enabled: form.exit_enabled,
       take_profit_pct: form.take_profit_pct,
-      stop_loss_pct: form.stop_loss_pct,
       kelly_haircut_high_pp: form.kelly_haircut_high_pp,
       kelly_haircut_medium_pp: form.kelly_haircut_medium_pp,
       kelly_haircut_low_pp: form.kelly_haircut_low_pp,
@@ -731,7 +729,9 @@ export default function AutopilotPage() {
               <div>
                 <label style={{ ...labelStyle, marginBottom: '2px' }}>Exit management</label>
                 <p className="text-xs" style={{ color: '#64748b' }}>
-                  Each cycle, sell open positions to lock profit or cut losses — pure price mechanics, no Claude call.
+                  Each cycle, sell open positions once they hit the take-profit target — pure price mechanics, no Claude call.
+                  Off by default: a live-money study found early exits (including stop-losses) destroyed value vs. holding
+                  binary contracts to resolution.
                 </p>
               </div>
               <Toggle
@@ -772,11 +772,6 @@ export default function AutopilotPage() {
             <label style={labelStyle}>Take profit at +%</label>
             <input type="number" min={1} step={1} value={form.take_profit_pct}
               onChange={(e) => setForm({ ...form, take_profit_pct: parseFloat(e.target.value) || 0 })} style={inputStyle} />
-          </div>
-          <div>
-            <label style={labelStyle}>Stop loss at −%</label>
-            <input type="number" min={1} step={1} value={form.stop_loss_pct}
-              onChange={(e) => setForm({ ...form, stop_loss_pct: parseFloat(e.target.value) || 0 })} style={inputStyle} />
           </div>
         </div>
         <button

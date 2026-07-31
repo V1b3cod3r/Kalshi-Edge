@@ -5,7 +5,7 @@ import { callClaude } from '@/lib/claude'
 import { MarketInput } from '@/lib/types'
 import { getSignalsForMarket } from '@/lib/signals'
 import { getMarketWebContext } from '@/lib/search'
-import { SHRINK_MARKET, SHRINK_CLAUDE, KALSHI_FEE_COEF } from '@/lib/scan'
+import { SHRINK_MARKET, SHRINK_CLAUDE, kalshiFeeCoef } from '@/lib/scan'
 
 /**
  * Extract a structured prediction from Claude's markdown analysis output.
@@ -41,7 +41,7 @@ function extractPrediction(
   // Manual entry may lack a NO quote; 1 − yes_price is optimistic there, but
   // there is no orderbook to do better with.
   const exec = direction === 'YES' ? market.yes_price : (market.no_price ?? 1 - market.yes_price)
-  const fee = KALSHI_FEE_COEF * exec * (1 - exec)
+  const fee = kalshiFeeCoef(market.id) * exec * (1 - exec)
   const raw_edge = direction === 'YES' ? p_shrunk - exec : (1 - p_shrunk) - exec
   const edge_pct = parseFloat(((raw_edge - fee) * 100).toFixed(2))
 

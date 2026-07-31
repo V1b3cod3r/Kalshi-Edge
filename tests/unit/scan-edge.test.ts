@@ -42,11 +42,12 @@ describe('edge constants', () => {
     expect(KALSHI_FEE_COEF).toBe(0.07)
   })
 
-  it('exports MIN_EFFECTIVE_EDGE 0.025 (post-shrinkage scale)', () => {
-    // 2.5pp effective ≈ 10–11pp raw disagreement after 0.4 shrinkage + fees.
-    // The old 7pp default demanded ~22pp disagreement and produced permanently
-    // empty scans.
-    expect(MIN_EFFECTIVE_EDGE).toBe(0.025)
+  it('exports MIN_EFFECTIVE_EDGE 0.12 (calibration floor, not a hopeful guess)', () => {
+    // Set at the measured calibration floor: KalshiBench found Claude Opus
+    // 4.5 — the best of 5 frontier models tested — has ECE 0.120 on
+    // genuinely-unknown future Kalshi questions. A threshold below that is
+    // mostly sampling the model's own calibration error, not real edge.
+    expect(MIN_EFFECTIVE_EDGE).toBe(0.12)
   })
 })
 
@@ -129,12 +130,12 @@ describe('effective edge formula — hand-computed examples', () => {
     })
     expect(below).toBeLessThan(MIN_EFFECTIVE_EDGE * 100)
 
-    // Claude at 62%: p_shrunk = 0.548, edge = 3.05% → passes.
+    // Claude at 85%: p_shrunk = 0.64, edge = 12.25% → passes the 12% floor.
     const above = effectiveEdgePct({
       direction: 'YES',
       yes_ask: 0.5,
       no_ask: 0.52,
-      claude_estimate_pct: 62,
+      claude_estimate_pct: 85,
     })
     expect(above).toBeGreaterThanOrEqual(MIN_EFFECTIVE_EDGE * 100)
   })

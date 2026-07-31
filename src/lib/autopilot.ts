@@ -18,7 +18,7 @@ import {
   settlementProfitDollars,
   KalshiAuth,
 } from '@/lib/kalshi'
-import { runScan, ScanOpportunity, KALSHI_FEE_COEF } from '@/lib/scan'
+import { runScan, ScanOpportunity, kalshiFeeCoef } from '@/lib/scan'
 import { AutopilotRun, AutopilotTrade } from '@/lib/types'
 
 // ---------------------------------------------------------------------------
@@ -253,6 +253,14 @@ export async function runAutopilotCycle(): Promise<AutopilotReport> {
     // Daily spend so far (executed autopilot trades logged today)
     let dailySpend = getTodaySpend()
 
+    // Tickers sold in THIS cycle's exit pass. Separate from openTickers (which
+    // the exit pass also clears, on purpose, so freed exposure/cluster/position
+    // headroom is available to OTHER new entries this same cycle) — without
+    // this, the buy loop could immediately re-buy the exact ticker the exit
+    // pass just sold, paying the spread and two fees for a round trip that
+    // nets nothing.
+    const justSoldTickers = new Set<string>()
+
     // EXIT PASS: manage open positions with pure price mechanics — no LLM, no
     // Claude call, fully deterministic. Runs AFTER the circuit breaker but
     // BEFORE the buy loop so any capital and position slots freed by a sell are
@@ -301,16 +309,18 @@ export async function runAutopilotCycle(): Promise<AutopilotReport> {
 
           // Gain relative to entry, and Kalshi's per-contract sell fee.
           const gainFrac = (sellPrice - avgEntry) / avgEntry
-          const fee = KALSHI_FEE_COEF * sellPrice * (1 - sellPrice)
+          const fee = kalshiFeeCoef(ticker) * sellPrice * (1 - sellPrice)
           const netPerContract = sellPrice - fee
 
+          // Take-profit only — no stop-loss. A binary contract converging to
+          // 0 or 1 has no momentum to cut; re-running the shrinkage math at a
+          // lower price makes the thesis look STRONGER, not weaker, so a
+          // fixed-% stop-loss sells exactly the positions the model likes
+          // most and pays a second fee to do it. Only exit early on a gain,
+          // and only if that gain survives the sell fee.
           let exitReason: string | null = null
           if (gainFrac >= ap.take_profit_pct / 100 && netPerContract > avgEntry) {
-            // Take profit — but only if still a gain net of the sell fee.
             exitReason = 'take_profit'
-          } else if (gainFrac <= -ap.stop_loss_pct / 100) {
-            // Stop loss — thesis broken, cut it regardless of fee.
-            exitReason = 'stop_loss'
           }
 
           // HOLD: log nothing (only actions and skips-with-reasons are logged).
@@ -353,6 +363,7 @@ export async function runAutopilotCycle(): Promise<AutopilotReport> {
           const cluster = clusterForTicker(ticker)
           clusterExposure.set(cluster, Math.max(0, (clusterExposure.get(cluster) ?? 0) - cost))
           openTickers.delete(ticker)
+          justSoldTickers.add(ticker)
         } catch (err: any) {
           // One bad position must never abort the exit pass or the buy loop.
           report.trades.push({
@@ -381,7 +392,13 @@ export async function runAutopilotCycle(): Promise<AutopilotReport> {
     const scan = await runScan({
       limit: ap.scan_limit ?? 40,
       min_volume: 0,
-      min_effective_edge: Math.min(ap.min_effective_edge_pct / 100, 0.07),
+      // No artificial ceiling here — an earlier version capped this at 0.07
+      // regardless of the configured guardrail, which silently undermined any
+      // min_effective_edge_pct set above 7% (the scan-level filter runs BEFORE
+      // evaluateOpportunity, so opportunities never even reached the guardrail
+      // check). The guardrail is the intended single source of truth for this
+      // threshold; the scan filter must match it exactly, not undercut it.
+      min_effective_edge: ap.min_effective_edge_pct / 100,
       max_days_to_resolution: ap.max_days_to_resolution,
       logPredictions: false,
     })
@@ -401,6 +418,7 @@ export async function runAutopilotCycle(): Promise<AutopilotReport> {
         totalExposure,
         clusterExposure,
         openTickers,
+        justSoldTickers,
       })
 
       if ('skip' in decision) {
@@ -517,6 +535,7 @@ interface GuardrailContext {
   totalExposure: number
   clusterExposure: Map<string, number>
   openTickers: Set<string>
+  justSoldTickers: Set<string>
 }
 
 type Decision =
@@ -572,6 +591,9 @@ function evaluateOpportunity(opp: ScanOpportunity, ctx: GuardrailContext): Decis
   // --- Guardrails that are independent of trade size -------------------------
   if (ctx.openTickers.has(opp.ticker)) {
     return skip('Already holding a position in this ticker (no averaging)')
+  }
+  if (ctx.justSoldTickers.has(opp.ticker)) {
+    return skip('Just sold this position this cycle — wait for next cycle before re-entering')
   }
   if (ctx.openPositionCount >= ap.max_open_positions) {
     return skip(`Open positions (${ctx.openPositionCount}) at maximum of ${ap.max_open_positions}`)

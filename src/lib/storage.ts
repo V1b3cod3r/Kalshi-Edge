@@ -29,10 +29,15 @@ const DEFAULT_SESSION: SessionState = {
 const DEFAULT_AUTOPILOT: AutopilotSettings = {
   enabled: false,
   dry_run: true,
-  // Post-shrinkage scale: 4pp effective requires Claude to disagree with the
-  // market by ~15pp (see scan.ts). The old default of 7 needed ~22pp — an
-  // unpassable bar that guaranteed zero trades.
-  min_effective_edge_pct: 4,
+  // Set at the measured calibration floor, not a hopeful guess. KalshiBench
+  // (300 real Kalshi questions, 5 frontier models) found Claude Opus 4.5 —
+  // the BEST of the five — has ECE 0.120 on genuinely-unknown future events.
+  // A threshold below that floor is mostly sampling the model's own
+  // calibration error, not detecting real mispricing (see scan.ts:
+  // MIN_EFFECTIVE_EDGE for the full citation). 15pp sits just above that
+  // floor. Re-tune from YOUR OWN measured ECE (getCalibrationStats) once
+  // enough predictions have resolved — do not lower this on a hunch.
+  min_effective_edge_pct: 15,
   min_confidence: 'HIGH',
   max_per_trade_usd: 25,
   max_daily_spend_usd: 100,
@@ -42,9 +47,14 @@ const DEFAULT_AUTOPILOT: AutopilotSettings = {
   kelly_fraction: 0.25,
   category_blacklist: ['Sports'],
   max_per_cluster_usd: 50,
-  exit_enabled: true,
+  // Off by default. A live-money weather-market study (562 trades) found
+  // every configuration using profit-taking or stop-losses destroyed value
+  // versus holding to resolution — a binary contract converging to 0 or 1 has
+  // no momentum to cut, so a fixed-% stop-loss sells exactly when the entry
+  // thesis (per the shrunk estimate) has gotten STRONGER, not weaker. Still
+  // available for anyone who wants to test it themselves; just not assumed.
+  exit_enabled: false,
   take_profit_pct: 40,
-  stop_loss_pct: 50,
   scan_limit: 40,
   max_days_to_resolution: 45,
   min_resolved_predictions_for_live: 30,

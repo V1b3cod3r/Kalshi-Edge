@@ -385,8 +385,15 @@ export default function AutopilotPage() {
     if (runningRef.current) return
     runningRef.current = true
     setRunning(true)
+    // A full cycle can legitimately take a while (Kalshi calls + a Claude
+    // call +, if the newer mechanical strategies are on, a couple of full
+    // market-list scans) — 8 minutes is generous headroom, not an expected
+    // duration. This exists so a genuinely stuck request eventually tells
+    // the user something instead of leaving the button spinning forever.
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), 8 * 60 * 1000)
     try {
-      const res = await fetch('/api/autopilot/run', { method: 'POST' })
+      const res = await fetch('/api/autopilot/run', { method: 'POST', signal: controller.signal })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error)
       const report: AutopilotRun = data.report
@@ -407,8 +414,22 @@ export default function AutopilotPage() {
         )
       }
     } catch (err: any) {
-      showToast(err.message || 'Autopilot run failed', 'error')
+      // "Failed to fetch" (Chrome) / "NetworkError when attempting to fetch
+      // resource" (Firefox) is the browser's own message for a connection
+      // that never completed — almost always the dev server process itself
+      // crashed or restarted mid-request, NOT a normal app-level error (those
+      // arrive as a report.status of 'error'/'halted' above, or a clean
+      // thrown Error from a non-OK response). Distinguish it so the toast
+      // says something actionable instead of repeating the opaque browser text.
+      if (err?.name === 'AbortError') {
+        showToast('Cycle is taking unusually long (8+ min) — check the terminal running the app for errors, or wait and check the run log below.', 'error')
+      } else if (err?.name === 'TypeError') {
+        showToast('Lost connection to the app server mid-request. Check the terminal window running "npm run dev" for an error — if it shows one, that’s the real cause.', 'error')
+      } else {
+        showToast(err.message || 'Autopilot run failed', 'error')
+      }
     } finally {
+      clearTimeout(timeoutId)
       runningRef.current = false
       setRunning(false)
       loadStatus()

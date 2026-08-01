@@ -404,63 +404,88 @@ export async function runAutopilotCycle(): Promise<AutopilotReport> {
     // attribution (see getCalibrationStats' by_strategy breakdown). Every
     // strategy funnels through the SAME guardrail/Kelly/logging pipeline
     // below. One strategy's failure must never abort the cycle or the others.
+    //
+    // Run all enabled strategies CONCURRENTLY, not sequentially. Dated
+    // Favorites and Settlement Sniping each paginate the ENTIRE open-market
+    // list on their own (up to 25 pages); with all three strategies on, a
+    // sequential await-one-then-the-next cycle could take minutes of wall
+    // clock time for no reason — none of these strategies depend on each
+    // other's output, so there's nothing gained by serializing them.
     const strategyOpportunities: StrategyOpportunity[] = []
     let marketsScanned = 0
     let llmScreenedOut: { ticker: string; title: string; reason: string; direction?: 'YES' | 'NO'; edge_pct?: number }[] = []
 
+    interface LlmResult { kind: 'llm'; opportunities: StrategyOpportunity[]; marketsScanned: number; screenedOut: typeof llmScreenedOut }
+    interface MechanicalResult { kind: 'mechanical'; opportunities: StrategyOpportunity[] }
+    const strategyTasks: Promise<LlmResult | MechanicalResult>[] = []
+
     if (ap.strategy_llm_divergence_enabled !== false) {
-      // Autopilot logs its own predictions for executed trades, so suppress
-      // the scanner's own logging. Scanning more markets never loosens a
-      // safety gate — it only gives the confidence/edge/cluster filters more
-      // candidates to choose from. A breadth of 15 statistically surfaced ~0
-      // tradeable opportunities; 40 matches the manual scanner's sweet spot.
-      const scan = await runScan({
-        limit: ap.scan_limit ?? 40,
-        min_volume: 0,
-        // No artificial ceiling here — an earlier version capped this at 0.07
-        // regardless of the configured guardrail, which silently undermined any
-        // min_effective_edge_pct set above 7% (the scan-level filter runs BEFORE
-        // evaluateOpportunity, so opportunities never even reached the guardrail
-        // check). The guardrail is the intended single source of truth for this
-        // threshold; the scan filter must match it exactly, not undercut it.
-        min_effective_edge: ap.min_effective_edge_pct / 100,
-        max_days_to_resolution: ap.max_days_to_resolution,
-        logPredictions: false,
-      })
-      marketsScanned = scan.markets_scanned
-      llmScreenedOut = scan.screened_out ?? []
-      for (const o of scan.opportunities) {
-        strategyOpportunities.push({
-          strategy: 'llm-divergence',
-          ticker: o.ticker,
-          title: o.title,
-          direction: o.direction,
-          execution_price: o.execution_price ?? o.yes_price ?? 0,
-          edge_pct: o.edge_pct,
-          p_shrunk: o.p_shrunk,
-          confidence: o.confidence,
-          category: o.category,
-          resolution_date: o.resolution_date,
-          rationale: o.rationale,
-          raw_probability: (o.my_estimate_pct ?? 50) / 100,
+      strategyTasks.push((async (): Promise<LlmResult> => {
+        // Autopilot logs its own predictions for executed trades, so suppress
+        // the scanner's own logging. Scanning more markets never loosens a
+        // safety gate — it only gives the confidence/edge/cluster filters more
+        // candidates to choose from. A breadth of 15 statistically surfaced ~0
+        // tradeable opportunities; 40 matches the manual scanner's sweet spot.
+        const scan = await runScan({
+          limit: ap.scan_limit ?? 40,
+          min_volume: 0,
+          // No artificial ceiling here — an earlier version capped this at 0.07
+          // regardless of the configured guardrail, which silently undermined any
+          // min_effective_edge_pct set above 7% (the scan-level filter runs BEFORE
+          // evaluateOpportunity, so opportunities never even reached the guardrail
+          // check). The guardrail is the intended single source of truth for this
+          // threshold; the scan filter must match it exactly, not undercut it.
+          min_effective_edge: ap.min_effective_edge_pct / 100,
+          max_days_to_resolution: ap.max_days_to_resolution,
+          logPredictions: false,
         })
-      }
+        return {
+          kind: 'llm',
+          marketsScanned: scan.markets_scanned,
+          screenedOut: scan.screened_out ?? [],
+          opportunities: scan.opportunities.map((o): StrategyOpportunity => ({
+            strategy: 'llm-divergence',
+            ticker: o.ticker,
+            title: o.title,
+            direction: o.direction,
+            execution_price: o.execution_price ?? o.yes_price ?? 0,
+            edge_pct: o.edge_pct,
+            p_shrunk: o.p_shrunk,
+            confidence: o.confidence,
+            category: o.category,
+            resolution_date: o.resolution_date,
+            rationale: o.rationale,
+            raw_probability: (o.my_estimate_pct ?? 50) / 100,
+          })),
+        }
+      })())
     }
 
     if (ap.strategy_dated_favorites_enabled) {
-      try {
-        strategyOpportunities.push(...(await datedFavoritesOpportunities(ap)))
-      } catch {
-        // mechanical strategies are best-effort — a fetch failure this cycle
-        // just means zero candidates from this strategy, never an aborted cycle
-      }
+      strategyTasks.push(
+        datedFavoritesOpportunities(ap)
+          .then((opportunities): MechanicalResult => ({ kind: 'mechanical', opportunities }))
+          // mechanical strategies are best-effort — a fetch failure this
+          // cycle just means zero candidates from this strategy, never an
+          // aborted cycle or a blocked llm-divergence result.
+          .catch((): MechanicalResult => ({ kind: 'mechanical', opportunities: [] }))
+      )
     }
 
     if (ap.strategy_settlement_snipe_enabled) {
-      try {
-        strategyOpportunities.push(...(await settlementSnipeOpportunities(ap)))
-      } catch {
-        // same as above
+      strategyTasks.push(
+        settlementSnipeOpportunities(ap)
+          .then((opportunities): MechanicalResult => ({ kind: 'mechanical', opportunities }))
+          .catch((): MechanicalResult => ({ kind: 'mechanical', opportunities: [] }))
+      )
+    }
+
+    const strategyResults = await Promise.all(strategyTasks)
+    for (const result of strategyResults) {
+      strategyOpportunities.push(...result.opportunities)
+      if (result.kind === 'llm') {
+        marketsScanned = result.marketsScanned
+        llmScreenedOut = result.screenedOut
       }
     }
 

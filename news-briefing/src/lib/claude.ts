@@ -60,15 +60,16 @@ function addUsage(a: TokenUsage, b: TokenUsage): TokenUsage {
   };
 }
 
-function parseJson<T>(text: string): T {
-  const trimmed = text.trim();
-  const start = trimmed.indexOf("{");
-  const end = trimmed.lastIndexOf("}");
-  if (start === -1 || end === -1) throw new Error("no JSON in model output");
-  return JSON.parse(trimmed.slice(start, end + 1)) as T;
-}
+// Note on API-level prompt caching: our system prompts are ~300 tokens, far
+// below Haiku 4.5's 4096-token minimum cacheable prefix, so `cache_control`
+// markers would silently never cache (cacheRead stayed 0 for exactly this
+// reason). Cost control here comes from compact output formats and the
+// content-addressed Next.js data caches below instead.
 
-const SCORE_CLUSTER_SYSTEM = `You are a news curator. You will get a user's interests and a list of news article excerpts. Do both of the following, then return strict JSON only.
+// Output tokens cost 5x input, so the response format is deliberately terse:
+// integer triples instead of labeled objects, interests referenced by index
+// instead of repeating their text, and zero-score articles omitted entirely.
+const SCORE_CLUSTER_SYSTEM = `You are a news curator. The user message is JSON with "interests" (list of {i, t} — index and text) and "articles" (list of {id, source, title, excerpt}). Do both of the following, then return strict JSON only.
 
 TASK 1 — score each article 0-10 for how well it matches any of the interests:
 - 9-10: directly about a stated interest, high signal
@@ -79,12 +80,78 @@ If the interests list is empty, score every article 0.
 
 TASK 2 — group the articles by underlying news event. Two articles belong in the same cluster only if they cover the same story (same event, same announcement, same actors, same day), even if the angles or framings differ. Do NOT merge articles that merely share a topic ("AI" or "the Fed"). Every article id must appear in exactly one cluster; singleton clusters are normal and expected.
 
-Return JSON of the form:
-{"scores":[{"id":<number>,"score":<0-10>,"interest":"<matched interest or empty string>"}],"clusters":[[<id>,<id>,...],[<id>],...]}`;
+Return JSON of the form {"s":[[id,score,interest],...],"c":[[id,id,...],[id],...]}:
+- "s": one [article id, score, index of the best-matching interest (-1 if none)] triple per article; omit articles that score 0
+- "c": the clusters; every article id (including score-0 ones) appears in exactly one cluster`;
+
+const SCORE_CLUSTER_SCHEMA = {
+  type: "object",
+  properties: {
+    s: { type: "array", items: { type: "array", items: { type: "integer" } } },
+    c: { type: "array", items: { type: "array", items: { type: "integer" } } },
+  },
+  required: ["s", "c"],
+  additionalProperties: false,
+};
 
 interface ScoreClusterResult {
-  scores: { id: number; score: number; interest: string }[];
-  clusters: number[][];
+  s: number[][];
+  c: number[][];
+}
+
+interface StoredScoreCluster {
+  result: ScoreClusterResult;
+  usage: TokenUsage;
+  /** When the underlying API call actually ran — used to tell cache hits from fresh calls. */
+  at: number;
+}
+
+/** Throws on any failure so bad results are never written to the data cache. */
+async function scoreClusterCall(payload: string, model: string): Promise<StoredScoreCluster> {
+  const res = await client.messages.create({
+    model,
+    // Compact triples for ~40 articles plus clusters fit well under this;
+    // the cap bounds the cost of a pathologically verbose response.
+    max_tokens: 1500,
+    system: SCORE_CLUSTER_SYSTEM,
+    // Structured output guarantees parseable JSON, so we never pay for a
+    // scoring call only to discard it on a parse failure and silently fall
+    // back to keyword ranking.
+    output_config: {
+      format: { type: "json_schema", schema: SCORE_CLUSTER_SCHEMA },
+    },
+    messages: [{ role: "user", content: payload }],
+  });
+  const result = JSON.parse(textOf(res)) as ScoreClusterResult;
+  return { result, usage: readUsage(res), at: Date.now() };
+}
+
+// Scores and clusters depend only on the article set and interests — not on
+// the summary model, sort order, or time of day — so they're cached against
+// exactly those inputs. Force-refreshes where the feeds haven't changed and
+// summary-model switches reuse the stored result instead of re-paying the
+// call.
+const SCORE_CACHE_SECONDS = 60 * 60 * 24;
+
+function cachedScoreCluster(
+  payload: string,
+  links: string[],
+  interests: string[],
+  model: string,
+): Promise<StoredScoreCluster> {
+  // Keyed on article identity (links, in order — ids are positional) rather
+  // than the full payload, so an excerpt byte-tweak in a feed doesn't bust
+  // the cache. Same tradeoff the per-article summary cache makes.
+  const key = createHash("sha256")
+    .update(JSON.stringify({ links, interests, model }))
+    .digest("hex")
+    .slice(0, 16);
+  const fetcher = unstable_cache(
+    async () => scoreClusterCall(payload, model),
+    ["score-cluster-v1", key],
+    { revalidate: SCORE_CACHE_SECONDS },
+  );
+  return fetcher();
 }
 
 /**
@@ -95,7 +162,7 @@ interface ScoreClusterResult {
  *
  * On any failure (network, malformed output) falls back to the prefilter's
  * keyword-match ranking with singleton clusters, so the briefing still
- * builds instead of 500ing.
+ * builds instead of 500ing. Failures are never cached.
  */
 export async function scoreAndCluster(
   candidates: { article: RawArticle; matchedInterest: string | null; score: number }[],
@@ -119,36 +186,43 @@ export async function scoreAndCluster(
     title: c.article.title,
     excerpt: c.article.excerpt.slice(0, 280),
   }));
+  const payload = JSON.stringify({
+    interests: interests.map((t, i) => ({ i, t })),
+    articles: indexed,
+  });
 
-  let res: Anthropic.Message;
+  let stored: StoredScoreCluster;
   try {
-    res = await client.messages.create({
+    stored = await cachedScoreCluster(
+      payload,
+      candidates.map((c) => c.article.link),
+      interests,
       model,
-      max_tokens: 3000,
-      system: [
-        { type: "text", text: SCORE_CLUSTER_SYSTEM, cache_control: { type: "ephemeral" } },
-      ],
-      messages: [{ role: "user", content: JSON.stringify({ interests, articles: indexed }) }],
-    });
+    );
   } catch {
     return { ...fallback(), usage: EMPTY_USAGE };
   }
 
-  const usage = readUsage(res);
-  let parsed: ScoreClusterResult;
-  try {
-    parsed = parseJson<ScoreClusterResult>(textOf(res));
-  } catch {
-    return { ...fallback(), usage };
-  }
+  // Only count tokens actually spent on this pull — a stored `at` more than
+  // a minute old means the value came from the data cache, not a fresh call.
+  const usage = Date.now() - stored.at < 60_000 ? stored.usage : EMPTY_USAGE;
 
-  const byId = new Map((parsed.scores ?? []).map((s) => [s.id, s]));
+  const byId = new Map<number, { score: number; interestIdx: number }>();
+  for (const row of stored.result.s ?? []) {
+    if (!Array.isArray(row) || row.length < 2) continue;
+    const [id, score, interestIdx = -1] = row;
+    if (!Number.isInteger(id)) continue;
+    byId.set(id, { score, interestIdx });
+  }
   const articles = candidates.map((c, i) => {
     const s = byId.get(i);
     return {
       ...c.article,
       score: s?.score ?? 0,
-      matchedInterest: s?.interest && s.interest.length > 0 ? s.interest : null,
+      matchedInterest:
+        s && Number.isInteger(s.interestIdx) && s.interestIdx >= 0 && s.interestIdx < interests.length
+          ? interests[s.interestIdx]
+          : null,
     };
   });
 
@@ -156,7 +230,7 @@ export async function scoreAndCluster(
   // model dropped becomes its own singleton cluster.
   const seen = new Set<number>();
   const clusters: number[][] = [];
-  for (const group of parsed.clusters ?? []) {
+  for (const group of stored.result.c ?? []) {
     if (!Array.isArray(group)) continue;
     const valid: number[] = [];
     for (const id of group) {
@@ -247,9 +321,7 @@ async function summarizeOne(
   const res = await client.messages.create({
     model,
     max_tokens: 400,
-    system: [
-      { type: "text", text: SUMMARY_SYSTEM, cache_control: { type: "ephemeral" } },
-    ],
+    system: SUMMARY_SYSTEM,
     messages: [
       {
         role: "user",

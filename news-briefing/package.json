@@ -11,7 +11,7 @@
     "test-feeds": "tsx scripts/test-feeds.ts"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.65.0",
+    "@anthropic-ai/sdk": "^0.110.0",
     "fast-xml-parser": "^5.7.2",
     "next": "^15.5.15",
     "react": "19.0.0",

@@ -688,6 +688,7 @@ function evaluateOpportunity(opp: StrategyOpportunity, ctx: GuardrailContext): D
       executed: false,
       skip_reason: reason,
       strategy: opp.strategy,
+      rationale: opp.rationale,
       ...extra,
     },
   })
@@ -812,6 +813,7 @@ function evaluateOpportunity(opp: StrategyOpportunity, ctx: GuardrailContext): D
       kelly_stake: parseFloat(kellyStake.toFixed(2)),
       executed: false, // caller sets true after a live order succeeds
       strategy: opp.strategy,
+      rationale: opp.rationale,
     },
   }
 }

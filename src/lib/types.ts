@@ -226,6 +226,11 @@ export interface AutopilotTrade {
   // | 'settlement-snipe' | 'exit-management' (sells) | undefined (legacy
   // rows, all pre-registry rows were the LLM scanner).
   strategy?: string
+  // Why the strategy flagged this opportunity — carried through from
+  // StrategyOpportunity.rationale unchanged. Present on buys and their skips
+  // (the same opportunity, evaluated); absent on sells, which already have
+  // exit_reason for their (purely mechanical) reasoning.
+  rationale?: string
 }
 
 export interface AutopilotRun {

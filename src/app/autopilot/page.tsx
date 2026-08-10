@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { Fragment, useState, useEffect, useCallback, useRef } from 'react'
 import { AutopilotSettings, AutopilotRun, AutopilotTrade, CalibrationStats } from '@/lib/types'
 import { ToastNotification } from '@/components/SessionPanel'
 
@@ -196,56 +196,68 @@ function RunRow({ run }: { run: AutopilotRun }) {
                     const { color, label } = tradeRowColor(t)
                     const isSell = t.intent === 'sell'
                     return (
-                      <tr key={`${t.ticker}-${i}`} style={{ borderTop: '1px solid #1a1a28' }}>
-                        <td className="px-3 py-2">
-                          <span
-                            className="font-bold"
-                            style={
-                              isSell && !t.skip_reason
-                                ? { color, backgroundColor: `${color}18`, border: `1px solid ${color}40`, borderRadius: '4px', padding: '1px 6px' }
-                                : { color }
-                            }
-                          >
-                            {label}
-                          </span>
-                        </td>
-                        <td className="px-3 py-2" style={{ maxWidth: '260px' }}>
-                          <div style={{ color: t.skip_reason ? '#64748b' : '#f1f5f9' }}>
-                            {t.title && t.title !== t.ticker ? t.title : t.ticker}
-                          </div>
-                          {t.title && t.title !== t.ticker && (
-                            <div className="font-mono" style={{ color: '#475569', fontSize: '10px' }}>
-                              {t.ticker}
+                      <Fragment key={`${t.ticker}-${i}`}>
+                        <tr style={{ borderTop: '1px solid #1a1a28' }}>
+                          <td className="px-3 py-2">
+                            <span
+                              className="font-bold"
+                              style={
+                                isSell && !t.skip_reason
+                                  ? { color, backgroundColor: `${color}18`, border: `1px solid ${color}40`, borderRadius: '4px', padding: '1px 6px' }
+                                  : { color }
+                              }
+                            >
+                              {label}
+                            </span>
+                          </td>
+                          <td className="px-3 py-2" style={{ maxWidth: '260px' }}>
+                            <div style={{ color: t.skip_reason ? '#64748b' : '#f1f5f9' }}>
+                              {t.title && t.title !== t.ticker ? t.title : t.ticker}
                             </div>
-                          )}
-                        </td>
-                        <td className="px-3 py-2 font-bold" style={{ color: t.side === 'yes' ? '#22c55e' : '#ef4444' }}>
-                          {t.side.toUpperCase()}
-                        </td>
-                        <td className="px-3 py-2 text-right" style={{ color: '#e2e8f0' }}>
-                          {t.skip_reason ? '—' : t.contracts}
-                        </td>
-                        <td className="px-3 py-2 text-right" style={{ color: '#e2e8f0' }}>
-                          {t.price > 0 ? `$${t.price.toFixed(2)}` : '—'}
-                        </td>
-                        <td className="px-3 py-2 text-right" style={{ color: '#e2e8f0' }}>
-                          {t.skip_reason ? '—' : `$${t.cost.toFixed(2)}`}
-                        </td>
-                        <td className="px-3 py-2 text-right" style={{ color: isSell ? '#3b82f6' : t.effective_edge_pct >= 7 ? '#22c55e' : '#94a3b8' }}>
-                          {isSell
-                            ? (t.exit_reason ? exitReasonLabel(t.exit_reason) : '—')
-                            : `${t.effective_edge_pct.toFixed(1)}%`}
-                        </td>
-                        <td className="px-3 py-2" style={{ color: '#64748b', maxWidth: '340px' }}>
-                          {t.skip_reason
-                            ? t.skip_reason
-                            : isSell
-                              ? `${exitReasonLabel(t.exit_reason)} · ${t.executed ? `Sold ${t.contracts} @ $${t.price.toFixed(2)}${t.order_id ? ` · Order ${t.order_id}` : ''}` : `Would sell ${t.contracts} @ $${t.price.toFixed(2)}`}`
-                              : t.executed
-                                ? `Order ${t.order_id ?? ''} · Kelly stake $${t.kelly_stake.toFixed(2)}`
-                                : `Would place · Kelly stake $${t.kelly_stake.toFixed(2)}`}
-                        </td>
-                      </tr>
+                            {t.title && t.title !== t.ticker && (
+                              <div className="font-mono" style={{ color: '#475569', fontSize: '10px' }}>
+                                {t.ticker}
+                              </div>
+                            )}
+                          </td>
+                          <td className="px-3 py-2 font-bold" style={{ color: t.side === 'yes' ? '#22c55e' : '#ef4444' }}>
+                            {t.side.toUpperCase()}
+                          </td>
+                          <td className="px-3 py-2 text-right" style={{ color: '#e2e8f0' }}>
+                            {t.skip_reason ? '—' : t.contracts}
+                          </td>
+                          <td className="px-3 py-2 text-right" style={{ color: '#e2e8f0' }}>
+                            {t.price > 0 ? `$${t.price.toFixed(2)}` : '—'}
+                          </td>
+                          <td className="px-3 py-2 text-right" style={{ color: '#e2e8f0' }}>
+                            {t.skip_reason ? '—' : `$${t.cost.toFixed(2)}`}
+                          </td>
+                          <td className="px-3 py-2 text-right" style={{ color: isSell ? '#3b82f6' : t.effective_edge_pct >= 7 ? '#22c55e' : '#94a3b8' }}>
+                            {isSell
+                              ? (t.exit_reason ? exitReasonLabel(t.exit_reason) : '—')
+                              : `${t.effective_edge_pct.toFixed(1)}%`}
+                          </td>
+                          <td className="px-3 py-2" style={{ color: '#64748b', maxWidth: '340px' }}>
+                            {t.skip_reason
+                              ? t.skip_reason
+                              : isSell
+                                ? `${exitReasonLabel(t.exit_reason)} · ${t.executed ? `Sold ${t.contracts} @ $${t.price.toFixed(2)}${t.order_id ? ` · Order ${t.order_id}` : ''}` : `Would sell ${t.contracts} @ $${t.price.toFixed(2)}`}`
+                                : t.executed
+                                  ? `Order ${t.order_id ?? ''} · Kelly stake $${t.kelly_stake.toFixed(2)}`
+                                  : `Would place · Kelly stake $${t.kelly_stake.toFixed(2)}`}
+                          </td>
+                        </tr>
+                        {t.rationale && (
+                          <tr style={{ borderTop: '1px dashed #1a1a28' }}>
+                            <td colSpan={8} className="px-3 pb-2" style={{ color: '#8b8fa3' }}>
+                              <span style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.05em', color: '#475569', marginRight: '6px' }}>
+                                WHY
+                              </span>
+                              <span className="italic" style={{ fontSize: '12px' }}>{t.rationale}</span>
+                            </td>
+                          </tr>
+                        )}
+                      </Fragment>
                     )
                   })}
                 </tbody>

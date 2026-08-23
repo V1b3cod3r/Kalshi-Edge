@@ -262,6 +262,73 @@ describe('runAutopilotCycle — SIT: cost control (disabled strategy never calls
   })
 })
 
+describe('runAutopilotCycle — SIT: absolute horizon ceiling (never buy a multi-year contract)', () => {
+  it('skips a dated-favorites candidate resolving in ~500 days even when the per-strategy horizon setting is misconfigured wide open', async () => {
+    // dated_favorites_max_days is set far past a year on purpose — the point
+    // of the absolute ceiling in evaluateOpportunity is that it holds
+    // regardless of how a per-strategy setting gets misconfigured, not just
+    // under sane defaults.
+    await seedSettings({
+      dry_run: true,
+      strategy_llm_divergence_enabled: false,
+      strategy_dated_favorites_enabled: true,
+      dated_favorites_min_price_cents: 60,
+      dated_favorites_max_price_cents: 95,
+      dated_favorites_min_days: 1,
+      dated_favorites_max_days: 1000,
+      min_effective_edge_pct: 0.5,
+      min_confidence: 'MEDIUM',
+      kelly_haircut_high_pp: 0,
+    })
+    installKalshiFetchMock({
+      markets: [
+        rawMarket({
+          ticker: 'FAR-OUT', title: 'Multi-year favorite', yes_ask: 90, yes_bid: 88,
+          close_time: new Date(Date.now() + 500 * 86400000).toISOString(),
+        }),
+      ],
+    })
+
+    const { runAutopilotCycle } = await import('@/lib/autopilot')
+    const report = await runAutopilotCycle()
+
+    expect(report.status).toBe('ok')
+    const decision = report.trades.find((t) => t.ticker === 'FAR-OUT')
+    expect(decision).toBeDefined()
+    expect(decision?.executed).toBe(false)
+    expect(decision?.skip_reason).toMatch(/365-day absolute horizon ceiling/)
+  })
+
+  it('still buys a near-dated candidate resolving well within a year', async () => {
+    await seedSettings({
+      dry_run: true,
+      strategy_llm_divergence_enabled: false,
+      strategy_dated_favorites_enabled: true,
+      dated_favorites_min_price_cents: 60,
+      dated_favorites_max_price_cents: 95,
+      dated_favorites_min_days: 1,
+      dated_favorites_max_days: 90,
+      min_effective_edge_pct: 0.5,
+      min_confidence: 'MEDIUM',
+      kelly_haircut_high_pp: 0,
+    })
+    installKalshiFetchMock({
+      markets: [
+        rawMarket({
+          ticker: 'NEAR-DATED', title: 'Near-dated favorite', yes_ask: 90, yes_bid: 88,
+          close_time: new Date(Date.now() + 60 * 86400000).toISOString(),
+        }),
+      ],
+    })
+
+    const { runAutopilotCycle } = await import('@/lib/autopilot')
+    const report = await runAutopilotCycle()
+
+    const buy = report.trades.find((t) => t.ticker === 'NEAR-DATED' && !t.skip_reason)
+    expect(buy).toBeDefined()
+  })
+})
+
 describe('runAutopilotCycle — SIT: shared guardrails apply ACROSS strategies', () => {
   it('a spend limit tight enough for only one trade lets the higher-edge strategy win, regardless of origin', async () => {
     // Two candidates, each would cost ~$80 (contracts sized by $100 cap /

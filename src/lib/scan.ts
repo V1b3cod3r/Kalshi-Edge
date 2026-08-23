@@ -475,13 +475,18 @@ export async function runScan(params: RunScanParams = {}): Promise<RunScanResult
   // liquid markets on all of Kalshi (typically multi-year politics/macro
   // questions) crowd out short-dated ones, which is exactly backwards: those
   // long-dated markets tie up capital for years per point of edge and their
-  // predictions never resolve fast enough to validate the model. Undated
-  // markets pass through uncapped (can't judge a horizon that isn't there).
+  // predictions never resolve fast enough to validate the model. Undated or
+  // unparseable-date markets are EXCLUDED, not passed through — an earlier
+  // version let them through uncapped on the theory that "you can't judge a
+  // horizon that isn't there", but that's exactly how live autopilot ended up
+  // buying contracts resolving in 2029-2035 (see the FAIL CLOSED note below):
+  // a market missing a resolution_date is no more provably short-dated than
+  // one that openly reports a multi-year date, so it gets the same treatment.
   const withinHorizonCapped = max_days_to_resolution
     ? unexpired.filter((m) => {
-        if (!m.resolution_date) return true
+        if (!m.resolution_date) return false
         const ts = Date.parse(m.resolution_date)
-        if (!Number.isFinite(ts)) return true
+        if (!Number.isFinite(ts)) return false
         const days = (ts - now) / (1000 * 60 * 60 * 24)
         return days <= max_days_to_resolution
       })

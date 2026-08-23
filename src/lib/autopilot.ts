@@ -34,6 +34,13 @@ import { settlementSnipeOpportunities } from '@/lib/strategies/settlementSnipe'
 
 export interface AutopilotReport extends AutopilotRun {}
 
+// Hard, non-configurable ceiling on how far out a market can resolve and
+// still be tradeable — applied to every strategy in evaluateOpportunity, on
+// top of (not instead of) each strategy's own tunable horizon. See the
+// guardrail comment at its use site for why this can't just be
+// max_days_to_resolution (that setting is llm-divergence-specific).
+const ABSOLUTE_MAX_DAYS_TO_RESOLUTION = 365
+
 const CONFIDENCE_RANK: Record<string, number> = { LOW: 0, MEDIUM: 1, HIGH: 2 }
 
 // Semantic correlation clusters — markets in the same cluster tend to resolve
@@ -705,6 +712,32 @@ function evaluateOpportunity(opp: StrategyOpportunity, ctx: GuardrailContext): D
   )
   if (blacklisted) {
     return skip(`Category "${opp.category}" is blacklisted`)
+  }
+
+  // Absolute horizon backstop — NOT the same check as scan.ts's
+  // max_days_to_resolution filter (that one is llm-divergence-specific and
+  // user-tunable; dated-favorites and settlement-snipe enforce their OWN
+  // horizon via their own settings, already hard-bounded in their strategy
+  // modules). This is a single, non-configurable ceiling applied here so
+  // every strategy — present and future — is covered by one guarantee: no
+  // opportunity that resolves more than a year out is ever tradeable, no
+  // matter how a per-strategy setting gets misconfigured. Multi-year
+  // contracts tie up capital for years per point of edge and can't be used
+  // to validate the model on any useful timescale. Fails closed: a missing
+  // or unparseable resolution date can't be proven safe, so it's skipped.
+  if (!opp.resolution_date) {
+    return skip('No resolution date available — cannot verify horizon, skipping by default')
+  }
+  const resolveTs = Date.parse(opp.resolution_date)
+  if (!Number.isFinite(resolveTs)) {
+    return skip('Resolution date could not be parsed — cannot verify horizon, skipping by default')
+  }
+  const daysToResolution = (resolveTs - Date.now()) / (1000 * 60 * 60 * 24)
+  if (daysToResolution > ABSOLUTE_MAX_DAYS_TO_RESOLUTION) {
+    return skip(
+      `Resolves in ${Math.round(daysToResolution)}d — beyond the ${ABSOLUTE_MAX_DAYS_TO_RESOLUTION}-day absolute ` +
+      `horizon ceiling (multi-year contracts lock up capital and can't validate the model on any useful timescale)`
+    )
   }
 
   // Fail-safe: no valid execution price → never trade

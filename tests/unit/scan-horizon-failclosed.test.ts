@@ -131,6 +131,25 @@ describe('runScan — resolution horizon (REAL MONEY: must fail closed, never op
     expect(mockCreate).not.toHaveBeenCalled()
   })
 
+  it('excludes markets with no resolution date, rather than passing them through uncapped', async () => {
+    const nearTerm = new Date(Date.now() + 5 * 24 * 60 * 60 * 1000).toISOString()
+    mockKalshiMarkets([
+      { ticker: 'NEAR', title: 'Near market', yes_ask: 40, yes_bid: 38, volume_24h: 5000, close_time: nearTerm },
+      // No close_time/expiration_time at all — an earlier version let markets
+      // like this through the horizon cap uncapped ("can't judge a horizon
+      // that isn't there"), which is exactly how autopilot could end up
+      // holding an undated, unbounded-horizon contract. Missing data must be
+      // treated the same as a known long-dated market: excluded.
+      { ticker: 'UNDATED', title: 'Undated market', yes_ask: 40, yes_bid: 38, volume_24h: 9000 },
+    ])
+    mockClaudeScan()
+
+    const { runScan } = await import('@/lib/scan')
+    const result = await runScan({ limit: 15, max_days_to_resolution: 45, logPredictions: false })
+
+    expect(result.markets_scanned).toBe(1)
+  })
+
   it('still applies the cap normally when at least one market qualifies', async () => {
     const nearTerm = new Date(Date.now() + 5 * 24 * 60 * 60 * 1000).toISOString()
     const farFuture = new Date(Date.now() + 400 * 24 * 60 * 60 * 1000).toISOString()

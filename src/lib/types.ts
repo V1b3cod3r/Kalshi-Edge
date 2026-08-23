@@ -103,6 +103,8 @@ export interface StrategyStats {
   brier: number | null              // resolved-only; null until resolved > 0
 }
 
+export type MistakeType = 'overconfidence' | 'base_rate_neglect' | 'anchoring' | 'news_overreaction' | 'thin_market' | 'timing_error' | 'other'
+
 export interface Lesson {
   id: string
   prediction_id: string
@@ -116,8 +118,21 @@ export interface Lesson {
   edge_pct: number
   what_went_wrong: string        // 1-2 sentence post-mortem
   what_to_do_differently: string // actionable recommendation
-  mistake_type: 'overconfidence' | 'base_rate_neglect' | 'anchoring' | 'news_overreaction' | 'thin_market' | 'timing_error' | 'other'
+  mistake_type: MistakeType
   created_at: string
+}
+
+// Aggregated view over every extracted lesson, grouped by WHY the trade lost
+// — the thing a per-loss lesson answers individually but nothing previously
+// rolled up. Answers "which failure mode actually recurs" so a pattern (e.g.
+// overconfidence concentrated in one category) is visible without reading
+// every lesson by hand.
+export interface MistakeTypeStats {
+  mistake_type: MistakeType
+  count: number                    // lessons tagged with this mistake type
+  avg_edge_claimed_pct: number     // mean claimed edge on the losing trades behind these lessons
+  top_categories: string[]         // up to 3 categories, most frequent first
+  latest_example: string | null    // most recent what_to_do_differently, for a quick read
 }
 
 export interface AutopilotSettings {
@@ -270,6 +285,10 @@ export interface CalibrationStats {
   market_brier_midpoint_samples: number
   // Realized P&L grouped by ORIGIN strategy — see StrategyStats.
   by_strategy: StrategyStats[]
+  // Every extracted lesson grouped by WHY the trade lost — see
+  // MistakeTypeStats. Sorted most-frequent first so the top row is always
+  // "the failure mode costing the most trades right now."
+  by_mistake_type: MistakeTypeStats[]
 }
 
 export interface MarketInput {

@@ -1,6 +1,6 @@
 import fs from 'fs'
 import path from 'path'
-import { MacroView, SessionState, AppSettings, AutopilotSettings, AutopilotRun, Prediction, CalibrationStats, EdgeBucketStats, StrategyStats, Lesson } from './types'
+import { MacroView, SessionState, AppSettings, AutopilotSettings, AutopilotRun, Prediction, CalibrationStats, EdgeBucketStats, StrategyStats, Lesson, MistakeType, MistakeTypeStats } from './types'
 
 // Support DATA_DIR env var for cloud deployments (Railway mounts a volume here)
 const DATA_DIR = process.env.DATA_DIR ?? path.join(process.cwd(), 'data')
@@ -296,6 +296,42 @@ export function getRelevantLessons(category: string, keywords: string[], limit =
     .map((s) => s.lesson)
 }
 
+const ALL_MISTAKE_TYPES: MistakeType[] = [
+  'overconfidence', 'base_rate_neglect', 'anchoring', 'news_overreaction', 'thin_market', 'timing_error', 'other',
+]
+
+// Groups every extracted lesson by WHY the trade lost. Each lesson is
+// already a per-trade post-mortem (see lessons.ts); this is the rollup that
+// was missing — nothing previously answered "which failure mode actually
+// recurs" without reading every lesson by hand. Always includes all 7 known
+// mistake_type values (even zero-count ones) so a summary view can render a
+// stable set of rows/bars rather than ones that appear and disappear as data
+// accumulates — same convention as by_edge_bucket.
+function computeMistakeTypeStats(): MistakeTypeStats[] {
+  const lessons = getLessons()
+  return ALL_MISTAKE_TYPES.map((mistake_type) => {
+    const inType = lessons.filter((l) => l.mistake_type === mistake_type)
+    if (inType.length === 0) {
+      return { mistake_type, count: 0, avg_edge_claimed_pct: 0, top_categories: [], latest_example: null }
+    }
+    const avg_edge_claimed_pct = parseFloat(
+      (inType.reduce((s, l) => s + l.edge_pct, 0) / inType.length).toFixed(2)
+    )
+    const categoryCounts = new Map<string, number>()
+    for (const l of inType) {
+      categoryCounts.set(l.category, (categoryCounts.get(l.category) ?? 0) + 1)
+    }
+    const top_categories = Array.from(categoryCounts.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([cat]) => cat)
+    // Lessons are unshifted on creation (storage.ts createLesson), so index 0
+    // within this filtered set is already the most recent.
+    const latest_example = inType[0].what_to_do_differently || null
+    return { mistake_type, count: inType.length, avg_edge_claimed_pct, top_categories, latest_example }
+  }).sort((a, b) => b.count - a.count)
+}
+
 // Calibration stats — computed on the fly from resolved predictions
 export function getCalibrationStats(): CalibrationStats {
   const predictions = getPredictions()
@@ -422,6 +458,7 @@ export function getCalibrationStats(): CalibrationStats {
     by_edge_bucket,
     market_brier_midpoint_samples: 0,
     by_strategy,
+    by_mistake_type: computeMistakeTypeStats(),
   }
 
   if (resolved.length === 0) return empty
@@ -572,6 +609,7 @@ export function getCalibrationStats(): CalibrationStats {
     by_edge_bucket,
     market_brier_midpoint_samples,
     by_strategy,
+    by_mistake_type: computeMistakeTypeStats(),
   }
 }
 

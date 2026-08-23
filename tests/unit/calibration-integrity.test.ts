@@ -16,6 +16,11 @@ function seedPredictions(rows: any[]) {
   writeFileSync(path.join(tmpDir, 'data', 'predictions.json'), JSON.stringify(rows, null, 2))
 }
 
+function seedLessons(rows: any[]) {
+  mkdirSync(path.join(tmpDir, 'data'), { recursive: true })
+  writeFileSync(path.join(tmpDir, 'data', 'lessons.json'), JSON.stringify(rows, null, 2))
+}
+
 beforeEach(() => {
   tmpDir = mkdtempSync(path.join(tmpdir(), 'kalshi-calib-'))
   vi.spyOn(process, 'cwd').mockReturnValue(tmpDir)
@@ -223,5 +228,52 @@ describe('realized ROI by ORIGIN strategy (strategy registry)', () => {
     const { getCalibrationStats } = await import('@/lib/storage')
     const by = getCalibrationStats().by_strategy
     expect(by.find((s) => s.strategy === 'settlement-snipe')).toBeUndefined()
+  })
+})
+
+const lessonBase = {
+  prediction_id: 'p', market_title: 'M', predicted_direction: 'YES' as const,
+  actual_outcome: 'NO' as const, predicted_probability: 0.8, market_price: 0.5,
+  what_went_wrong: '', created_at: new Date().toISOString(),
+}
+
+describe('losses grouped by mistake type (root-cause rollup)', () => {
+  it('always includes all 7 known mistake types, even with zero lessons', async () => {
+    const { getCalibrationStats } = await import('@/lib/storage')
+    const by = getCalibrationStats().by_mistake_type
+    expect(by.map((m) => m.mistake_type).sort()).toEqual(
+      ['anchoring', 'base_rate_neglect', 'news_overreaction', 'other', 'overconfidence', 'thin_market', 'timing_error']
+    )
+    expect(by.every((m) => m.count === 0)).toBe(true)
+  })
+
+  it('counts lessons per mistake type and sorts most-frequent first', async () => {
+    seedLessons([
+      { ...lessonBase, id: 'l1', category: 'Politics', keywords: [], edge_pct: 8, mistake_type: 'overconfidence', what_to_do_differently: 'A' },
+      { ...lessonBase, id: 'l2', category: 'Politics', keywords: [], edge_pct: 12, mistake_type: 'overconfidence', what_to_do_differently: 'B' },
+      { ...lessonBase, id: 'l3', category: 'Economics/Finance', keywords: [], edge_pct: 5, mistake_type: 'thin_market', what_to_do_differently: 'C' },
+    ])
+    const { getCalibrationStats } = await import('@/lib/storage')
+    const by = getCalibrationStats().by_mistake_type
+
+    expect(by[0].mistake_type).toBe('overconfidence')
+    expect(by[0].count).toBe(2)
+    expect(by[0].avg_edge_claimed_pct).toBeCloseTo(10, 3)
+    expect(by[0].top_categories).toEqual(['Politics'])
+
+    const thin = by.find((m) => m.mistake_type === 'thin_market')!
+    expect(thin.count).toBe(1)
+  })
+
+  it('surfaces the most recently created lesson as the latest example', async () => {
+    // createLesson unshifts new entries, so index 0 in a filtered group is
+    // already the most recent — seed pre-sorted the same way.
+    seedLessons([
+      { ...lessonBase, id: 'newest', category: 'Politics', keywords: [], edge_pct: 8, mistake_type: 'anchoring', what_to_do_differently: 'Do the newer thing' },
+      { ...lessonBase, id: 'oldest', category: 'Politics', keywords: [], edge_pct: 8, mistake_type: 'anchoring', what_to_do_differently: 'Do the older thing' },
+    ])
+    const { getCalibrationStats } = await import('@/lib/storage')
+    const anchoring = getCalibrationStats().by_mistake_type.find((m) => m.mistake_type === 'anchoring')!
+    expect(anchoring.latest_example).toBe('Do the newer thing')
   })
 })

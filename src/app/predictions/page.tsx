@@ -1,9 +1,19 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { Prediction, CalibrationStats } from '@/lib/types'
+import { Prediction, CalibrationStats, MistakeType } from '@/lib/types'
 
 type Filter = 'all' | 'pending' | 'resolved'
+
+const MISTAKE_TYPE_LABELS: Record<MistakeType, string> = {
+  overconfidence: 'Overconfidence',
+  base_rate_neglect: 'Base rate neglect',
+  anchoring: 'Anchoring',
+  news_overreaction: 'News overreaction',
+  thin_market: 'Thin market',
+  timing_error: 'Timing error',
+  other: 'Other',
+}
 
 function brierScore(predictions: Prediction[]): number | null {
   const resolved = predictions.filter((p) => p.outcome != null)
@@ -268,6 +278,48 @@ export default function PredictionsPage() {
               No predictions have resolved yet — ROI fills in as markets settle.
             </p>
           )}
+        </div>
+      )}
+
+      {/* Losses grouped by WHY — every loss already gets a Claude post-mortem
+          (see lessons.ts) tagged with a mistake_type, but until now nothing
+          rolled those up. This answers "which failure mode actually
+          recurs" without reading every lesson by hand. */}
+      {calStats?.by_mistake_type && calStats.by_mistake_type.some((m) => m.count > 0) && (
+        <div className="rounded-xl border p-6 mb-6" style={{ backgroundColor: '#12121a', borderColor: '#1e1e2e' }}>
+          <div className="text-xs font-medium uppercase tracking-wider mb-1" style={{ color: '#64748b' }}>
+            Losses by Root Cause
+          </div>
+          <p className="text-xs mb-4" style={{ color: '#475569' }}>
+            Every loss gets an automated post-mortem tagged with why it happened. Sorted by frequency —
+            the top row is the failure mode costing the most trades right now.
+          </p>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr style={{ backgroundColor: '#0d0d17' }}>
+                  <th className="px-3 py-2 text-left" style={{ color: '#64748b' }}>Mistake type</th>
+                  <th className="px-3 py-2 text-right" style={{ color: '#64748b' }}>Losses</th>
+                  <th className="px-3 py-2 text-right" style={{ color: '#64748b' }}>Avg claimed edge</th>
+                  <th className="px-3 py-2 text-left" style={{ color: '#64748b' }}>Top categories</th>
+                  <th className="px-3 py-2 text-left" style={{ color: '#64748b' }}>Most recent takeaway</th>
+                </tr>
+              </thead>
+              <tbody>
+                {calStats.by_mistake_type.filter((m) => m.count > 0).map((m) => (
+                  <tr key={m.mistake_type} style={{ borderTop: '1px solid #1a1a28' }}>
+                    <td className="px-3 py-2 font-mono" style={{ color: '#f1f5f9' }}>
+                      {MISTAKE_TYPE_LABELS[m.mistake_type] ?? m.mistake_type}
+                    </td>
+                    <td className="px-3 py-2 text-right font-bold" style={{ color: '#ef4444' }}>{m.count}</td>
+                    <td className="px-3 py-2 text-right" style={{ color: '#94a3b8' }}>{m.avg_edge_claimed_pct.toFixed(1)}%</td>
+                    <td className="px-3 py-2" style={{ color: '#94a3b8' }}>{m.top_categories.join(', ') || '—'}</td>
+                    <td className="px-3 py-2" style={{ color: '#64748b', maxWidth: '360px' }}>{m.latest_example ?? '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 

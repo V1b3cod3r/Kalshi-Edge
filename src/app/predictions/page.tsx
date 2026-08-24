@@ -196,6 +196,9 @@ export default function PredictionsPage() {
                   <th className="px-3 py-2 text-right" style={{ color: '#64748b' }}>Resolved</th>
                   <th className="px-3 py-2 text-right" style={{ color: '#64748b' }}>Hit rate</th>
                   <th className="px-3 py-2 text-right" style={{ color: '#64748b' }}>Realized ROI</th>
+                  <th className="px-3 py-2 text-right" style={{ color: '#64748b' }} title="Return per dollar risked per day held — the capital-velocity view: a smaller edge that resolves fast can out-earn a bigger edge that ties up capital for months.">
+                    ROI/$-day
+                  </th>
                 </tr>
               </thead>
               <tbody>
@@ -212,6 +215,9 @@ export default function PredictionsPage() {
                       style={{ color: b.realized_roi_pct == null ? '#475569' : b.realized_roi_pct > 0 ? '#22c55e' : '#ef4444' }}
                     >
                       {b.realized_roi_pct != null ? `${b.realized_roi_pct > 0 ? '+' : ''}${b.realized_roi_pct}%` : '—'}
+                    </td>
+                    <td className="px-3 py-2 text-right" style={{ color: '#64748b' }}>
+                      {b.realized_roi_per_dollar_day != null ? `${b.realized_roi_per_dollar_day > 0 ? '+' : ''}${b.realized_roi_per_dollar_day.toFixed(2)}%` : '—'}
                     </td>
                   </tr>
                 ))}
@@ -247,13 +253,83 @@ export default function PredictionsPage() {
                   <th className="px-3 py-2 text-right" style={{ color: '#64748b' }}>Resolved</th>
                   <th className="px-3 py-2 text-right" style={{ color: '#64748b' }}>Hit rate</th>
                   <th className="px-3 py-2 text-right" style={{ color: '#64748b' }}>Brier</th>
+                  <th className="px-3 py-2 text-right" style={{ color: '#64748b' }} title="Market's own Brier score over this strategy's resolved rows — the go-live gate compares against this, per strategy.">
+                    Mkt Brier
+                  </th>
                   <th className="px-3 py-2 text-right" style={{ color: '#64748b' }}>Realized ROI</th>
+                  <th className="px-3 py-2 text-right" style={{ color: '#64748b' }} title="Return per dollar risked per day held.">
+                    ROI/$-day
+                  </th>
                 </tr>
               </thead>
               <tbody>
                 {calStats.by_strategy.map((s) => (
                   <tr key={s.strategy} style={{ borderTop: '1px solid #1a1a28' }}>
                     <td className="px-3 py-2 font-mono" style={{ color: '#f1f5f9' }}>{s.strategy}</td>
+                    <td className="px-3 py-2 text-right" style={{ color: '#94a3b8' }}>{s.count}</td>
+                    <td className="px-3 py-2 text-right" style={{ color: '#94a3b8' }}>{s.resolved}</td>
+                    <td className="px-3 py-2 text-right" style={{ color: '#94a3b8' }}>
+                      {s.hit_rate != null ? `${Math.round(s.hit_rate * 100)}%` : '—'}
+                    </td>
+                    <td className="px-3 py-2 text-right" style={{ color: '#94a3b8' }}>
+                      {s.brier != null ? s.brier.toFixed(3) : '—'}
+                    </td>
+                    <td className="px-3 py-2 text-right" style={{ color: '#64748b' }}>
+                      {s.market_brier != null ? s.market_brier.toFixed(3) : '—'}
+                    </td>
+                    <td
+                      className="px-3 py-2 text-right font-bold"
+                      style={{ color: s.realized_roi_pct == null ? '#475569' : s.realized_roi_pct > 0 ? '#22c55e' : '#ef4444' }}
+                    >
+                      {s.realized_roi_pct != null ? `${s.realized_roi_pct > 0 ? '+' : ''}${s.realized_roi_pct}%` : '—'}
+                    </td>
+                    <td className="px-3 py-2 text-right" style={{ color: '#64748b' }}>
+                      {s.realized_roi_per_dollar_day != null ? `${s.realized_roi_per_dollar_day > 0 ? '+' : ''}${s.realized_roi_per_dollar_day.toFixed(2)}%` : '—'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {calStats.by_strategy.every((s) => s.resolved === 0) && (
+            <p className="text-xs mt-3" style={{ color: '#64748b' }}>
+              No predictions have resolved yet — ROI fills in as markets settle.
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* Realized ROI by the CONFIDENCE TIER that drove Kelly sizing at trade
+          time. Each tier gets a different haircut (kelly_haircut_high_pp /
+          _medium_pp / _low_pp) — this is the only way to tell whether that
+          graduated schedule is actually earning its keep, or whether a tier
+          is dead code (unreachable under the shipped min_confidence gate) /
+          mis-sized relative to what it should be. */}
+      {calStats?.by_confidence && calStats.by_confidence.length > 0 && (
+        <div className="rounded-xl border p-6 mb-6" style={{ backgroundColor: '#12121a', borderColor: '#1e1e2e' }}>
+          <div className="text-xs font-medium uppercase tracking-wider mb-1" style={{ color: '#64748b' }}>
+            Realized Return by Confidence Tier
+          </div>
+          <p className="text-xs mb-4" style={{ color: '#475569' }}>
+            The tier that set the Kelly haircut on each trade. If HIGH doesn&apos;t out-earn MEDIUM
+            and LOW, self-reported confidence isn&apos;t predictive — regardless of the haircut schedule.
+          </p>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr style={{ backgroundColor: '#0d0d17' }}>
+                  <th className="px-3 py-2 text-left" style={{ color: '#64748b' }}>Confidence</th>
+                  <th className="px-3 py-2 text-right" style={{ color: '#64748b' }}>Predictions</th>
+                  <th className="px-3 py-2 text-right" style={{ color: '#64748b' }}>Resolved</th>
+                  <th className="px-3 py-2 text-right" style={{ color: '#64748b' }}>Hit rate</th>
+                  <th className="px-3 py-2 text-right" style={{ color: '#64748b' }}>Brier</th>
+                  <th className="px-3 py-2 text-right" style={{ color: '#64748b' }}>Realized ROI</th>
+                </tr>
+              </thead>
+              <tbody>
+                {calStats.by_confidence.map((s) => (
+                  <tr key={s.confidence} style={{ borderTop: '1px solid #1a1a28' }}>
+                    <td className="px-3 py-2 font-mono" style={{ color: '#f1f5f9' }}>{s.confidence}</td>
                     <td className="px-3 py-2 text-right" style={{ color: '#94a3b8' }}>{s.count}</td>
                     <td className="px-3 py-2 text-right" style={{ color: '#94a3b8' }}>{s.resolved}</td>
                     <td className="px-3 py-2 text-right" style={{ color: '#94a3b8' }}>
@@ -273,11 +349,6 @@ export default function PredictionsPage() {
               </tbody>
             </table>
           </div>
-          {calStats.by_strategy.every((s) => s.resolved === 0) && (
-            <p className="text-xs mt-3" style={{ color: '#64748b' }}>
-              No predictions have resolved yet — ROI fills in as markets settle.
-            </p>
-          )}
         </div>
       )}
 

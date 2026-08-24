@@ -1,7 +1,7 @@
 'use client'
 
 import { Fragment, useState, useEffect, useCallback, useRef } from 'react'
-import { AutopilotSettings, AutopilotRun, AutopilotTrade, CalibrationStats } from '@/lib/types'
+import { AutopilotSettings, AutopilotRun, AutopilotTrade, CalibrationStats, AutopilotFunnelStats } from '@/lib/types'
 import { ToastNotification } from '@/components/SessionPanel'
 
 interface Toast {
@@ -29,6 +29,7 @@ interface StatusData {
   today_spend_usd: number
   today_realized_pnl_usd: number | null
   calibration: CalibrationStats
+  funnel: AutopilotFunnelStats
 }
 
 const INTERVAL_OPTIONS = [
@@ -600,31 +601,57 @@ export default function AutopilotPage() {
         </button>
       </div>
 
-      {/* Go-live gate: real orders are blocked in code until calibration proves out */}
-      {(() => {
-        const cal = status.calibration
-        const required = ap.min_resolved_predictions_for_live
-        const enoughSamples = cal.resolved_predictions >= required
-        const beatsMarket = cal.market_brier != null && cal.claude_brier < cal.market_brier
-        const gateMet = enoughSamples && beatsMarket
-        const color = gateMet ? '#22c55e' : '#f59e0b'
-        return (
-          <div
-            className="rounded-xl border p-4 mb-6 text-xs"
-            style={{ backgroundColor: '#1e1e2e', borderColor: `${color}50`, color: '#94a3b8' }}
-          >
-            <div className="font-bold mb-1" style={{ color }}>
-              {gateMet ? 'Live-trading gate: MET' : 'Live-trading gate: NOT MET (real orders blocked in code)'}
-            </div>
-            <div>
-              {cal.resolved_predictions}/{required} predictions resolved
-              {cal.market_brier != null && (
-                <> · Claude Brier {cal.claude_brier.toFixed(3)} vs market {cal.market_brier.toFixed(3)} ({beatsMarket ? 'beats market' : 'does not beat market'})</>
-              )}
-            </div>
+      {/* Go-live gate: real orders are blocked in code until calibration proves
+          out — evaluated PER STRATEGY, not once for the whole account. A
+          strategy with a proven record isn't blocked by a different,
+          unrelated strategy still accumulating history, and vice versa. */}
+      {!ap.require_calibration_to_go_live ? (
+        <div
+          className="rounded-xl border p-4 mb-6 text-xs"
+          style={{ backgroundColor: '#1e1e2e', borderColor: '#2a2a3e', color: '#64748b' }}
+        >
+          Live-trading gate is OFF — real orders are not gated on calibration history. Turn on
+          &quot;Require calibration to go live&quot; below to block a strategy from real orders until it
+          has its own proven track record.
+        </div>
+      ) : (
+        <div className="rounded-xl border p-4 mb-6" style={{ backgroundColor: '#1e1e2e', borderColor: '#2a2a3e' }}>
+          <div className="text-xs font-medium uppercase tracking-wider mb-3" style={{ color: '#64748b' }}>
+            Live-Trading Gate — Per Strategy
           </div>
-        )
-      })()}
+          <div className="space-y-2">
+            {(['llm-divergence', 'dated-favorites', 'settlement-snipe'] as const)
+              .filter((name) =>
+                name === 'llm-divergence' ? ap.strategy_llm_divergence_enabled !== false
+                : name === 'dated-favorites' ? ap.strategy_dated_favorites_enabled
+                : ap.strategy_settlement_snipe_enabled
+              )
+              .map((name) => {
+                const s = status.calibration.by_strategy.find((x) => x.strategy === name)
+                const required = ap.min_resolved_predictions_for_live
+                const resolved = s?.resolved ?? 0
+                const enoughSamples = resolved >= required
+                const beatsMarket = s?.market_brier != null && s?.brier != null && s.brier < s.market_brier
+                const gateMet = enoughSamples && beatsMarket
+                const color = gateMet ? '#22c55e' : '#f59e0b'
+                return (
+                  <div key={name} className="text-xs" style={{ color: '#94a3b8' }}>
+                    <span className="font-bold font-mono" style={{ color }}>
+                      {gateMet ? 'MET' : 'NOT MET'}
+                    </span>
+                    {' — '}
+                    <span className="font-mono">{name}</span>
+                    {': '}
+                    {resolved}/{required} resolved
+                    {s?.market_brier != null && s?.brier != null && (
+                      <> · Brier {s.brier.toFixed(3)} vs market {s.market_brier.toFixed(3)} ({beatsMarket ? 'beats market' : 'does not beat market'})</>
+                    )}
+                  </div>
+                )
+              })}
+          </div>
+        </div>
+      )}
 
       {/* Run controls */}
       <Section title="Run">
@@ -666,6 +693,37 @@ export default function AutopilotPage() {
           Auto-run only fires while this tab is open. Each cycle re-checks every guardrail before any order.
         </p>
       </Section>
+
+      {/* Funnel: which guardrail actually binds. Computed from every skip
+          ever logged, across every run still in the retention window — not
+          arithmetic on the edge/shrinkage formula. */}
+      {status.funnel.total_skips > 0 && (
+        <Section title="Funnel — Which Guardrail Actually Binds">
+          <p className="text-xs mb-4" style={{ color: '#64748b' }}>
+            {status.funnel.total_tier1_screened_out} candidates screened out before reaching a guardrail
+            (Claude&apos;s own triage) · {status.funnel.total_skips} skipped by a guardrail after that. Sorted
+            by frequency — the top row is the gate rejecting the most opportunities right now.
+          </p>
+          <div className="space-y-1.5">
+            {status.funnel.by_reason.slice(0, 10).map((r) => {
+              const pct = status.funnel.total_skips > 0 ? (r.count / status.funnel.total_skips) * 100 : 0
+              return (
+                <div key={r.category} className="flex items-center gap-3">
+                  <span className="text-xs w-56 flex-shrink-0 truncate" style={{ color: '#94a3b8' }} title={r.category}>
+                    {r.category}
+                  </span>
+                  <div className="flex-1 h-4 rounded" style={{ backgroundColor: '#0d0d17' }}>
+                    <div className="h-full rounded" style={{ width: `${Math.max(2, pct)}%`, backgroundColor: '#6366f1' }} />
+                  </div>
+                  <span className="text-xs w-20 flex-shrink-0 text-right font-mono" style={{ color: '#64748b' }}>
+                    {r.count} ({pct.toFixed(0)}%)
+                  </span>
+                </div>
+              )
+            })}
+          </div>
+        </Section>
+      )}
 
       {/* Guardrails */}
       <Section title="Guardrails">

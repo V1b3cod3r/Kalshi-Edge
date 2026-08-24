@@ -113,6 +113,13 @@ export async function settlementSnipeOpportunities(ap: AutopilotSettings): Promi
     const fee = kalshiFeeCoef(m.id) * price * (1 - price)
     const edge_pct = parseFloat(((p_shrunk - price - fee) * 100).toFixed(2))
 
+    const days_to_resolution = m.resolution_date
+      ? Math.max(1, (Date.parse(m.resolution_date) - Date.now()) / (1000 * 60 * 60 * 24))
+      : null
+    const annualized_edge_pct = days_to_resolution
+      ? parseFloat(((edge_pct * 365) / days_to_resolution).toFixed(1))
+      : null
+
     out.push({
       strategy: 'settlement-snipe',
       ticker: m.id,
@@ -126,6 +133,8 @@ export async function settlementSnipeOpportunities(ap: AutopilotSettings): Promi
       resolution_date: m.resolution_date ?? null,
       rationale: `${parsed.cityCode} today's ${parsed.kind === 'H' ? 'high' : 'low'} observed ${obs.valueF.toFixed(1)}°F ` +
         `(as of ${obs.asOfIso}), clears ${threshold}°F strike by ${margin.toFixed(1)}°F — capped P(YES)=${(p_shrunk * 100).toFixed(1)}%`,
+      days_to_resolution,
+      annualized_edge_pct,
     })
   }
 

@@ -75,6 +75,25 @@ export interface Prediction {
   // behind per-strategy P&L attribution — see getCalibrationStats'
   // by_strategy breakdown and docs/STRATEGY_EXPANSION_PLAN.md.
   strategy?: string
+  // Kelly sizing inputs actually used at trade time (autopilot only) — what
+  // confidence-tier haircut and fraction-of-full-Kelly produced kelly_stake.
+  // Without these, the 3/5/8pp haircut tiers can never be validated against
+  // realized outcomes, and it's invisible that two tiers are dead code
+  // whenever min_confidence is set to HIGH (see autopilot.ts evaluateOpportunity).
+  haircut_pp_applied?: number
+  kelly_fraction_used?: number
+
+  // --- Exit tracking (added so early exits aren't silently scored as if
+  // held to resolution) -------------------------------------------------
+  // true when this position was sold early by the autopilot exit pass
+  // rather than settled by Kalshi at resolution. Without this, computeRoiStats
+  // treats every resolved row identically — an early sale at 70c looks the
+  // same as holding to a 100c settlement, silently corrupting the very ROI
+  // numbers that would otherwise validate or refute the exit policy.
+  exited_early?: boolean
+  exit_price?: number   // dollars per contract, net of the sell fee
+  exit_ts?: string
+  exit_reason?: string  // e.g. 'take_profit' — mirrors AutopilotTrade.exit_reason
 }
 
 // Realized performance grouped by the edge we CLAIMED at entry. This is the
@@ -88,6 +107,8 @@ export interface EdgeBucketStats {
   claimed_edge_avg: number          // mean claimed edge (pp)
   realized_roi_pct: number | null   // Σ payoff / Σ cost × 100; null until resolved > 0
   hit_rate: number | null           // fraction where direction was correct
+  // Σ payoff / Σ (cost × days held) × 100 — see StrategyStats.realized_roi_per_dollar_day.
+  realized_roi_per_dollar_day: number | null
 }
 
 // Realized performance grouped by ORIGIN strategy — the entire point of the
@@ -101,6 +122,34 @@ export interface StrategyStats {
   hit_rate: number | null
   realized_roi_pct: number | null   // Σ payoff / Σ cost × 100; null until resolved > 0
   brier: number | null              // resolved-only; null until resolved > 0
+  // Market's Brier score over this strategy's OWN resolved rows, computed the
+  // same midpoint-preferred way as the pooled market_brier. Without this, the
+  // go-live gate could only ever compare a strategy's Brier against nothing
+  // strategy-specific — see require_calibration_to_go_live in autopilot.ts.
+  market_brier: number | null
+  // Σ payoff / Σ (cost × days held), ×100. Same payoff math as
+  // realized_roi_pct but denominated in capital-days rather than capital
+  // alone — a 3% edge resolving in 2 days and an 8% edge resolving in 60
+  // days are NOT comparable on realized_roi_pct alone. null until at least
+  // one resolved row has a usable days-held figure (resolved_at present and
+  // parseable; falls back to resolution_date).
+  realized_roi_per_dollar_day: number | null
+}
+
+// Realized performance grouped by the CONFIDENCE TIER Claude/the strategy
+// reported at trade time — the tier that actually drove the Kelly haircut
+// (kelly_haircut_high_pp / _medium_pp / _low_pp in AutopilotSettings). Exists
+// because two of those three haircut tiers are unreachable whenever
+// min_confidence is 'HIGH' (the shipped default) — see the comment at
+// evaluateOpportunity's Kelly block in autopilot.ts — and nothing else
+// records which tier actually produced a given stake.
+export interface ConfidenceTierStats {
+  confidence: 'LOW' | 'MEDIUM' | 'HIGH'
+  count: number
+  resolved: number
+  hit_rate: number | null
+  realized_roi_pct: number | null
+  brier: number | null
 }
 
 export type MistakeType = 'overconfidence' | 'base_rate_neglect' | 'anchoring' | 'news_overreaction' | 'thin_market' | 'timing_error' | 'other'
@@ -120,6 +169,15 @@ export interface Lesson {
   what_to_do_differently: string // actionable recommendation
   mistake_type: MistakeType
   created_at: string
+  // Which strategy produced the losing prediction — undefined on legacy rows
+  // (pre-dates this field; treated as 'llm-divergence', same convention as
+  // Prediction.strategy). Matters because only llm-divergence losses are
+  // genuine REASONING-error postmortems — a mechanical strategy's loss is
+  // expected variance around a documented, deliberately-conservative model,
+  // not a diagnosable mistake the LLM scanner could learn from. See
+  // getRelevantLessons in storage.ts, which excludes non-LLM-origin lessons
+  // from the scanner-facing lookup for this reason.
+  strategy?: string
 }
 
 // Aggregated view over every extracted lesson, grouped by WHY the trade lost
@@ -168,6 +226,15 @@ export interface AutopilotSettings {
   // quarter-Kelly into effectively over-levered). Size from a conservative
   // LOWER BOUND on p instead, haircut by Claude's own stated confidence.
   // Percentage points subtracted from the win probability before sizing.
+  // NOTE: which of these three tiers is reachable depends on min_confidence.
+  // At the shipped default (min_confidence 'HIGH'), only the HIGH tier's
+  // haircut was reachable at all — MEDIUM/LOW opportunities never passed the
+  // confidence filter to reach the Kelly block in the first place. autopilot.ts
+  // now also applies a track-record-aware cap (a strategy with no resolved
+  // sample of its own gets treated as MEDIUM regardless of its self-reported
+  // confidence), which exercises the MEDIUM tier for a brand-new deployment —
+  // but a long-proven strategy that only ever self-reports HIGH still never
+  // exercises LOW, and never exercises MEDIUM either once proven.
   kelly_haircut_high_pp: number    // default 3
   kelly_haircut_medium_pp: number  // default 5
   kelly_haircut_low_pp: number     // default 8
@@ -179,6 +246,13 @@ export interface AutopilotSettings {
   // autopilot.ts) rather than filling immediately, so it trades fee savings
   // for fill-rate uncertainty. Sell/exit orders always stay taker — a timely
   // exit matters more there than the fee difference.
+  // SCOPE NOTE: this only changes the PRICE PAID at execution — autopilot.ts
+  // reprices to the live bid AFTER evaluateOpportunity has already decided to
+  // trade and sized the stake. It never changes which opportunities clear the
+  // effective-edge bar or how big a stake is: the fee coefficient feeding
+  // edge screening and Kelly sizing (scan.ts kalshiFeeCoef) is always the
+  // TAKER rate, maker or not. "Cuts the fee 4x" describes execution cost, not
+  // new marginal trades unlocked.
   use_maker_orders: boolean
 
   // --- Strategy registry (see docs/STRATEGY_EXPANSION_PLAN.md) -------------
@@ -198,6 +272,15 @@ export interface AutopilotSettings {
   dated_favorites_max_price_cents: number // default 90
   dated_favorites_min_days: number        // default 14
   dated_favorites_max_days: number        // default 56
+  // default 500 (matches the manual scanner's own THIN-market threshold —
+  // see prompts.ts). This strategy unconditionally reports confidence HIGH
+  // regardless of liquidity (see its own "reported HIGH so it can actually
+  // clear the default min_confidence gate" comment) — a thin, single-quote
+  // market otherwise draws the SAME (smallest) Kelly haircut as a liquid one.
+  // Autopilot's llm-divergence path has its own volume filter explicitly
+  // disabled (min_volume: 0 in autopilot.ts), so this is the only operative
+  // liquidity floor across any autopilot-invoked strategy.
+  dated_favorites_min_volume_usd: number
   // default false (opt-in, brand new, unvalidated in production). Live
   // weather-observation-vs-strike rule — see settlementSnipe.ts. No LLM call.
   strategy_settlement_snipe_enabled: boolean
@@ -246,6 +329,16 @@ export interface AutopilotTrade {
   // (the same opportunity, evaluated); absent on sells, which already have
   // exit_reason for their (purely mechanical) reasoning.
   rationale?: string
+  // Confidence tier and the Kelly inputs it drove — see Prediction's fields
+  // of the same name for why these matter. Present on sized buys/skips only
+  // (sells have no confidence tier — the exit pass is pure price mechanics).
+  confidence?: 'LOW' | 'MEDIUM' | 'HIGH'
+  haircut_pp_applied?: number
+  kelly_fraction_used?: number
+  // 'maker' when placed as a resting post_only order (use_maker_orders),
+  // 'taker' when crossing the spread immediate_or_cancel. Undefined on sells
+  // (exit orders always taker — see the exit pass) and on skips (never placed).
+  order_type?: 'maker' | 'taker'
 }
 
 export interface AutopilotRun {
@@ -259,6 +352,19 @@ export interface AutopilotRun {
   trades: AutopilotTrade[]
   halted?: string            // circuit-breaker / halt reason
   error?: string
+  // Snapshot of the setting at run time — lets a skip-reason/funnel analysis
+  // (see storage.ts getAutopilotFunnelStats) distinguish "maker mode was off"
+  // from "maker mode was on but found no bid" without re-reading settings
+  // history that may have since changed.
+  use_maker_orders?: boolean
+  // How many llm-divergence candidates Claude/code screened out BEFORE the
+  // guardrail pipeline ever saw them (scan.ts's screened_out list — ticker
+  // mismatches, below-effective-edge, and Claude's own fairly-priced calls).
+  // Recorded unconditionally every cycle, not just when it's the only output
+  // to show — the near-miss entries already logged into `trades` are capped
+  // at 5 and only appear on a zero-buy cycle, so this is the only place the
+  // TRUE count survives for funnel analysis.
+  opportunities_screened_out?: number
 }
 
 export interface CalibrationStats {
@@ -289,6 +395,26 @@ export interface CalibrationStats {
   // MistakeTypeStats. Sorted most-frequent first so the top row is always
   // "the failure mode costing the most trades right now."
   by_mistake_type: MistakeTypeStats[]
+  // Realized P&L grouped by the CONFIDENCE TIER that drove sizing at trade
+  // time — see ConfidenceTierStats. Only populated for autopilot-sourced
+  // rows carrying the confidence field (older/manual rows are omitted, not
+  // miscategorized).
+  by_confidence: ConfidenceTierStats[]
+}
+
+// One bucket of the skip-reason funnel — see getAutopilotFunnelStats in
+// storage.ts. Computed from autopilot_log.json (not predictions.json), so it
+// lives outside CalibrationStats: it answers "which guardrail actually binds"
+// across every skip ever logged, not "did the model call the outcome right."
+export interface SkipReasonStats {
+  category: string   // human-readable bucket label, e.g. "Below min effective edge"
+  count: number
+}
+
+export interface AutopilotFunnelStats {
+  total_skips: number
+  total_tier1_screened_out: number   // Σ opportunities_screened_out across runs
+  by_reason: SkipReasonStats[]       // sorted most-frequent first
 }
 
 export interface MarketInput {

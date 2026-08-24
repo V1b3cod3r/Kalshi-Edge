@@ -1,6 +1,37 @@
-import { MacroView, SessionState, MarketInput, CalibrationStats, Lesson } from './types'
+import { MacroView, SessionState, MarketInput, CalibrationStats, Lesson, MistakeTypeStats } from './types'
 import { Signal, formatSignals } from './signals'
 import { WebContext, formatWebContext } from './search'
+
+// Surfaces the AGGREGATE bias diagnostic getCalibrationStats already
+// computes (by_mistake_type) — previously computed and attached to
+// CalibrationStats but never read by either prompt. buildLessonsSection
+// below shows individual past losses matched to THIS market; this shows
+// which failure mode recurs across EVERY past loss, visible only in
+// aggregate. Gated on the top type having at least 3 losses behind it —
+// the same kind of small-sample gate the calibration section below uses
+// (resolved_predictions >= 5) — so a single early loss doesn't get
+// over-generalized into "you always do X."
+function buildMistakeTypeSection(byMistakeType?: MistakeTypeStats[]): string {
+  if (!byMistakeType) return ''
+  const top = byMistakeType.filter((s) => s.count >= 3).slice(0, 2)
+  if (top.length === 0) return ''
+  const lines = top
+    .map((s) => {
+      const label = s.mistake_type.replace(/_/g, ' ')
+      const cats = s.top_categories.length ? `, concentrated in ${s.top_categories.join(', ')}` : ''
+      return `- **${label}** (${s.count} losses, avg claimed edge ${s.avg_edge_claimed_pct.toFixed(1)}%${cats})${s.latest_example ? `: ${s.latest_example}` : ''}`
+    })
+    .join('\n')
+  return `
+
+---
+
+## Recurring Failure Patterns (aggregated across EVERY past loss, not just markets like this one)
+
+${lines}
+
+**Instruction**: These are your most common mistake types across your entire resolved history. Actively guard against them, even on markets that don't otherwise resemble the lessons above.`
+}
 
 function buildLessonsSection(lessons: Lesson[]): string {
   if (lessons.length === 0) return ''
@@ -235,7 +266,7 @@ If no edge exists: output NO BET — market appears fairly priced with brief rea
 - **Flag uncertainty**: If you don't have enough information to estimate confidently, say so explicitly.
 - **Avoid recency bias**: Anchor to base rates.
 - **Market price as prior**: The market price is your prior. To deviate from it, you must name specific information or reasoning the market participants do not have. Unexplained disagreement with a liquid price is estimation error, not edge.
-- **Be concise**: Give the key evidence points only. Quality over quantity.${calibrationSection}${buildLessonsSection(lessons)}`
+- **Be concise**: Give the key evidence points only. Quality over quantity.${calibrationSection}${buildMistakeTypeSection(calibration?.by_mistake_type)}${buildLessonsSection(lessons)}`
 }
 
 export function buildScannerSystemPrompt(calibration?: CalibrationStats, lessons: Lesson[] = []): string {
@@ -321,7 +352,7 @@ Rules:
 - Include ALL other markets in screened_out
 - Rank opportunities by score descending
 - The ticker field MUST exactly match the ticker provided in the input
-- Do not invent tickers or modify them${buildLessonsSection(lessons)}`
+- Do not invent tickers or modify them${buildMistakeTypeSection(calibration?.by_mistake_type)}${buildLessonsSection(lessons)}`
 }
 
 export function buildAnalysisUserMessage(

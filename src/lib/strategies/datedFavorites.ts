@@ -50,6 +50,7 @@ export async function datedFavoritesOpportunities(ap: AutopilotSettings): Promis
   const maxPrice = (ap.dated_favorites_max_price_cents ?? 90) / 100
   const minDays = ap.dated_favorites_min_days ?? 14
   const maxDays = ap.dated_favorites_max_days ?? 56
+  const minVolumeUsd = ap.dated_favorites_min_volume_usd ?? 500
 
   const markets = await fetchOpenMarkets(maxDays)
   const now = Date.now()
@@ -84,6 +85,16 @@ export async function datedFavoritesOpportunities(ap: AutopilotSettings): Promis
     const raw_edge = direction === 'YES' ? p_shrunk - price : (1 - p_shrunk) - price
     const edge_pct = parseFloat(((raw_edge - fee) * 100).toFixed(2))
 
+    const annualized_edge_pct = parseFloat(((edge_pct * 365) / Math.max(1, days)).toFixed(1))
+
+    // Liquidity floor: this rule reports HIGH confidence unconditionally
+    // (see below) regardless of how thin the book is — without a floor, a
+    // single-quote market draws the SAME (smallest) Kelly haircut as a
+    // liquid one. Downgrade to MEDIUM rather than excluding outright: real
+    // risk control stays the Kelly haircut/edge threshold/exposure caps, not
+    // a hard cutoff that would throw away a genuinely-good thin opportunity.
+    const thin = (m.volume_24h ?? 0) < minVolumeUsd
+
     out.push({
       strategy: 'dated-favorites',
       ticker: m.id,
@@ -97,10 +108,14 @@ export async function datedFavoritesOpportunities(ap: AutopilotSettings): Promis
       // actually clear the default min_confidence gate once a user opts in.
       // Real risk control here is the Kelly haircut, edge threshold, and
       // exposure caps below, all still applied exactly as for any strategy.
-      confidence: 'HIGH',
+      // Downgraded to MEDIUM below the liquidity floor (see `thin` above).
+      confidence: thin ? 'MEDIUM' : 'HIGH',
       category: m.category ?? 'Other/General',
       resolution_date: m.resolution_date ?? null,
-      rationale: `Favorite ${direction} @ ${(price * 100).toFixed(0)}¢, ${days.toFixed(0)}d to resolution — horizon-corrected P(${direction})≈${(pFavoriteWins * 100).toFixed(1)}% (slope-capped at ${DATED_FAVORITES_MAX_SLOPE}x)`,
+      rationale: `Favorite ${direction} @ ${(price * 100).toFixed(0)}¢, ${days.toFixed(0)}d to resolution — horizon-corrected P(${direction})≈${(pFavoriteWins * 100).toFixed(1)}% (slope-capped at ${DATED_FAVORITES_MAX_SLOPE}x)` +
+        (thin ? ` — thin market ($${(m.volume_24h ?? 0).toFixed(0)} 24h volume, below $${minVolumeUsd} floor), confidence downgraded` : ''),
+      days_to_resolution: Math.max(1, days),
+      annualized_edge_pct,
     })
   }
 

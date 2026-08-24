@@ -3,6 +3,8 @@ import {
   getAutopilotRuns,
   appendAutopilotRun,
   createPrediction,
+  getPredictions,
+  updatePrediction,
   getCalibrationStats,
 } from '@/lib/storage'
 import {
@@ -19,7 +21,7 @@ import {
   KalshiAuth,
 } from '@/lib/kalshi'
 import { runScan, kalshiFeeCoef } from '@/lib/scan'
-import { AutopilotRun, AutopilotTrade } from '@/lib/types'
+import { AutopilotRun, AutopilotTrade, StrategyStats } from '@/lib/types'
 import { StrategyOpportunity } from '@/lib/strategies/types'
 import { datedFavoritesOpportunities } from '@/lib/strategies/datedFavorites'
 import { settlementSnipeOpportunities } from '@/lib/strategies/settlementSnipe'
@@ -45,11 +47,19 @@ const CONFIDENCE_RANK: Record<string, number> = { LOW: 0, MEDIUM: 1, HIGH: 2 }
 
 // Semantic correlation clusters — markets in the same cluster tend to resolve
 // on the same underlying event, so we cap combined cost basis per cluster.
+// Kept in sync with scan.ts's mapCategory, which recognizes the same topics
+// under a materially wider term list — a market miscategorized here isn't
+// compared against its actually-correlated siblings for max_per_cluster_usd
+// purposes at all (e.g. a GDP-contraction market and a Fed-rate-cut market
+// each independently accumulating up to max_per_cluster_usd, both trading
+// the same recession narrative, without the cap ever comparing them).
+// Purely additive: widening a correlation cap only ever tightens sizing —
+// it moves markets INTO a shared cap, never out of one.
 const CLUSTER_KEYWORDS: Array<{ cluster: string; keywords: string[] }> = [
-  { cluster: 'macro-rates', keywords: ['rates', 'fed', 'cpi', 'inflation'] },
-  { cluster: 'crypto', keywords: ['btc', 'eth', 'sol', 'crypto'] },
-  { cluster: 'equities', keywords: ['s&p', 'nasdaq', 'inx'] },
-  { cluster: 'politics', keywords: ['trump', 'election', 'senate', 'congress'] },
+  { cluster: 'macro-rates', keywords: ['rates', 'fed', 'cpi', 'inflation', 'fomc', 'interest rate', 'gdp', 'jobless', 'unemployment', 'payroll', 'mortgage', 'treasury', 'recession'] },
+  { cluster: 'crypto', keywords: ['btc', 'eth', 'sol', 'crypto', 'bitcoin', 'ethereum', 'solana'] },
+  { cluster: 'equities', keywords: ['s&p', 'nasdaq', 'inx', 'dow jones', 'stock'] },
+  { cluster: 'politics', keywords: ['trump', 'election', 'senate', 'congress', 'biden', 'harris', 'president', 'governor', 'shutdown', 'tariff', 'impeach', 'supreme court', 'white house'] },
   { cluster: 'weather', keywords: ['temperature', 'rain', 'snow', 'weather'] },
 ]
 
@@ -208,26 +218,28 @@ export async function runAutopilotCycle(): Promise<AutopilotReport> {
     }
 
     // GO-LIVE GATE (optional — off by default per user setting): when
-    // enabled, never place a REAL order until this account's own calibration
-    // history shows Claude actually beats the market's Brier score over a
+    // enabled, never place a REAL order for a strategy until THAT STRATEGY's
+    // own calibration history shows it beats the market's Brier score over a
     // large enough resolved sample. Dry-run is always exempt — dry-run is how
     // that history accumulates in the first place.
+    //
+    // Gated PER STRATEGY (in evaluateOpportunity below, via
+    // calibrationByStrategy), not once for the whole account: this used to
+    // halt the entire cycle on a single pooled Brier/resolved-count check,
+    // which meant one strategy with a proven record could never trade while
+    // a brand-new, unrelated strategy was still accumulating history, and
+    // (worse) a genuinely bad strategy could ride on a good strategy's
+    // pooled numbers. StrategyStats.market_brier (storage.ts) is what makes
+    // a strategy-scoped comparison possible.
+    //
+    // Built UNCONDITIONALLY (not just when the go-live gate is on) — it also
+    // drives the track-record-aware Kelly haircut in evaluateOpportunity,
+    // which applies in dry-run too, independent of require_calibration_to_go_live.
+    const calibrationByStrategy = new Map<string, StrategyStats>()
+    for (const s of getCalibrationStats().by_strategy) {
+      calibrationByStrategy.set(s.strategy, s)
+    }
     if (!ap.dry_run) {
-      if (ap.require_calibration_to_go_live) {
-        const calibration = getCalibrationStats()
-        const required = ap.min_resolved_predictions_for_live
-        const enoughSamples = calibration.resolved_predictions >= required
-        const beatsMarket = calibration.market_brier != null && calibration.claude_brier < calibration.market_brier
-        if (!enoughSamples || !beatsMarket) {
-          report.status = 'halted'
-          report.halted = !enoughSamples
-            ? `Live trading gate not met: only ${calibration.resolved_predictions}/${required} predictions have resolved. Switch to dry-run and keep scanning until enough history accumulates.`
-            : `Live trading gate not met: Claude Brier ${calibration.claude_brier.toFixed(3)} does not beat market Brier ${calibration.market_brier!.toFixed(3)} over ${calibration.resolved_predictions} resolved predictions. The model is not demonstrably better than the market yet — switch back to dry-run.`
-          report.finished_at = new Date().toISOString()
-          appendAutopilotRun(report)
-          return report
-        }
-      }
       // Best-effort: clear out anything left resting from a prior cycle
       // before this cycle's balance/exposure snapshot is taken.
       await reconcileStaleOrders(auth)
@@ -260,12 +272,46 @@ export async function runAutopilotCycle(): Promise<AutopilotReport> {
       clusterExposure.set(cluster, (clusterExposure.get(cluster) ?? 0) + positionCost(p))
     }
 
-    // CIRCUIT BREAKER: realized losses today exceed the daily loss limit →
+    // UNREALIZED mark-to-market snapshot of open positions. Runs
+    // unconditionally — NOT gated behind exit_enabled (default false) — this
+    // is risk visibility, not the exit policy. Without it, the circuit
+    // breaker below only ever sees REALIZED settlement P&L, which is $0 for
+    // a position marked down close to its full cost basis but not yet
+    // settled: at defaults (max_daily_loss_usd $50 vs max_exposure_usd $250)
+    // that leaves the true worst-case same-day drawdown bounded only by the
+    // 5x-larger exposure cap, not the daily loss cap it's supposed to be
+    // caught by. Fail-safe: a quote that can't be fetched contributes $0 to
+    // this sum — UNDERSTATES the drawdown, never overstates it, so it can
+    // never falsely trip the breaker, only under-protect against a real one.
+    let unrealizedPnlNow = 0
+    for (const pos of openPositions) {
+      try {
+        const ticker = String(pos.ticker)
+        const signedQty = positionSignedQuantity(pos)
+        const count = Math.abs(signedQty)
+        const cost = positionCost(pos)
+        if (!(count > 0) || !(cost > 0)) continue
+        const isYes = signedQty > 0
+        const market = await fetchMarket(auth, ticker).catch(() => null)
+        if (!market) continue
+        const bid = isYes
+          ? bidPrice(market.yes_bid_dollars, market.yes_bid)
+          : bidPrice(market.no_bid_dollars, market.no_bid)
+        if (!Number.isFinite(bid) || bid <= 0 || bid >= 1) continue
+        unrealizedPnlNow += count * bid - cost
+      } catch {
+        // one bad quote must never abort the snapshot
+      }
+    }
+
+    // CIRCUIT BREAKER: realized losses today, PLUS current unrealized
+    // mark-to-market losses on open positions, exceed the daily loss limit →
     // halt the entire cycle before considering any trade.
     const realizedPnlToday = realizedPnlTodayFromSettlements(settlementsData)
-    if (realizedPnlToday <= -ap.max_daily_loss_usd) {
+    const combinedPnlToday = realizedPnlToday + unrealizedPnlNow
+    if (combinedPnlToday <= -ap.max_daily_loss_usd) {
       report.status = 'halted'
-      report.halted = `Circuit breaker: realized P&L today is $${realizedPnlToday.toFixed(2)}, at or beyond the -$${ap.max_daily_loss_usd.toFixed(2)} daily loss limit. No trades placed.`
+      report.halted = `Circuit breaker: realized P&L today is $${realizedPnlToday.toFixed(2)}, unrealized mark-to-market on open positions is $${unrealizedPnlNow.toFixed(2)} (combined $${combinedPnlToday.toFixed(2)}), at or beyond the -$${ap.max_daily_loss_usd.toFixed(2)} daily loss limit. No trades placed.`
       report.finished_at = new Date().toISOString()
       appendAutopilotRun(report)
       return report
@@ -376,6 +422,32 @@ export async function runAutopilotCycle(): Promise<AutopilotReport> {
             report.trades.push({ ...sellTrade, executed: true, order_id: order.order_id })
           }
 
+          // Tag the originating Prediction (if one was logged for this
+          // ticker) as exited early — otherwise it's silently scored as held
+          // to resolution once the underlying market eventually settles,
+          // even though the actual economics were realized HERE, at this
+          // price. Best-effort ticker match against the most recent
+          // unresolved autopilot-sourced prediction; a miss just means no
+          // ROI-per-exit correction is possible for this sale, never blocks
+          // the sell itself. exit_price is fee-net (netPerContract), the
+          // same figure the balance/headroom bookkeeping below already uses.
+          try {
+            const originating = getPredictions().find(
+              (p) => p.outcome === undefined && p.source === 'autopilot' &&
+                p.ticker && p.ticker.trim().toUpperCase() === ticker.trim().toUpperCase()
+            )
+            if (originating) {
+              updatePrediction(originating.id, {
+                exited_early: true,
+                exit_price: parseFloat(netPerContract.toFixed(4)),
+                exit_ts: new Date().toISOString(),
+                exit_reason: exitReason,
+              })
+            }
+          } catch {
+            // exit tagging is non-critical — never block the sell or the cycle
+          }
+
           // Free guardrail headroom and credit approximate proceeds so the buy
           // loop sees a realistic post-sell cycle. On dry-run we mirror the same
           // adjustment so the logged cycle reflects what a live cycle would do.
@@ -463,6 +535,8 @@ export async function runAutopilotCycle(): Promise<AutopilotReport> {
             resolution_date: o.resolution_date,
             rationale: o.rationale,
             raw_probability: (o.my_estimate_pct ?? 50) / 100,
+            days_to_resolution: o.days_to_resolution,
+            annualized_edge_pct: o.annualized_edge_pct,
           })),
         }
       })())
@@ -498,13 +572,40 @@ export async function runAutopilotCycle(): Promise<AutopilotReport> {
 
     report.markets_scanned = marketsScanned
     report.opportunities_considered = strategyOpportunities.length
+    // Recorded UNCONDITIONALLY, not just when a zero-buy cycle surfaces up to
+    // 5 near-misses below — this is the only place the TRUE tier-1 (pre-
+    // guardrail) rejection count survives for funnel analysis
+    // (getAutopilotFunnelStats in storage.ts).
+    report.opportunities_screened_out = llmScreenedOut.length
+    report.use_maker_orders = ap.use_maker_orders
 
     const minConfidenceRank = CONFIDENCE_RANK[ap.min_confidence] ?? CONFIDENCE_RANK.HIGH
 
-    // d. Evaluate each opportunity against filters + guardrails, best edge
-    // first regardless of which strategy found it — capital-efficiency, not
-    // strategy identity, decides who gets first claim on limited headroom.
-    strategyOpportunities.sort((a, b) => b.edge_pct - a.edge_pct)
+    // d. Evaluate each opportunity against filters + guardrails, best
+    // CAPITAL-ANNUALIZED edge first, regardless of which strategy found it —
+    // a 5% edge resolving in a week is far more capital-efficient than a 5%
+    // edge resolving in a year, and should get first claim on limited daily-
+    // spend/exposure headroom. Mirrors scan.ts's own sort exactly, including
+    // its fallback: opportunities with no resolution date (annualized_edge_pct
+    // null) fall back to raw edge_pct and sort after every dated one.
+    strategyOpportunities.sort((a, b) =>
+      (b.annualized_edge_pct ?? -Infinity) - (a.annualized_edge_pct ?? -Infinity) || b.edge_pct - a.edge_pct
+    )
+
+    // A ticker with an unresolved autopilot prediction already logged gets
+    // re-surfaced every cycle it still qualifies until it resolves — without
+    // this, the SAME opportunity racks up duplicate Prediction rows every
+    // cycle it appears, most acutely in dry-run: a dry-run "buy" never
+    // becomes a real Kalshi position, so openTickers (built from the real
+    // account) never reflects it and never blocks a re-log the way a live
+    // buy naturally would on the next cycle. Mirrors scan.ts's own
+    // pendingTickers pattern exactly.
+    const pendingPredictionTickers = new Set(
+      getPredictions()
+        .filter((p) => p.outcome === undefined && p.ticker && p.source === 'autopilot')
+        .map((p) => p.ticker!.trim().toUpperCase())
+    )
+
     for (const opp of strategyOpportunities) {
       const decision = evaluateOpportunity(opp, {
         ap,
@@ -516,6 +617,7 @@ export async function runAutopilotCycle(): Promise<AutopilotReport> {
         clusterExposure,
         openTickers,
         justSoldTickers,
+        calibrationByStrategy,
       })
 
       if ('skip' in decision) {
@@ -551,6 +653,11 @@ export async function runAutopilotCycle(): Promise<AutopilotReport> {
         trade = { ...trade, price: bid, cost: parseFloat((trade.contracts * bid).toFixed(2)) }
       }
 
+      // 'maker' vs 'taker' — set unconditionally (both dry-run and live log
+      // it) so realized ROI can eventually be broken out by fee tier once a
+      // fee-adjusted-ROI join exists; today it's visibility, not yet used.
+      trade = { ...trade, order_type: ap.use_maker_orders ? 'maker' : 'taker' }
+
       if (ap.dry_run) {
         // Dry run: log the would-be order, place nothing, but still consume
         // guardrail headroom within this cycle so the log reflects what a
@@ -572,13 +679,20 @@ export async function runAutopilotCycle(): Promise<AutopilotReport> {
             (ap.use_maker_orders ? MAKER_ORDER_EXPIRATION_SECONDS : ORDER_EXPIRATION_SECONDS),
         })
         report.trades.push({ ...trade, executed: true, order_id: order.order_id })
+      }
 
-        // Record the prediction for calibration tracking (best-effort).
-        // predicted_probability prefers raw_probability (Claude's UNSHRUNK
-        // self-report, llm-divergence only) so calibration measures the
-        // model's own calibration, not the blended trading decision — see
-        // STRATEGY_PLAN.md Phase 1. Mechanical strategies have no separate
-        // raw estimate; p_shrunk IS the belief there.
+      // Record the prediction for calibration tracking (best-effort) — on
+      // BOTH dry-run and live now, not live-only. The go-live gate's own
+      // comment says "dry-run is how that history accumulates in the first
+      // place"; until this logged unconditionally, dry-run mode produced
+      // ZERO autopilot-attributed predictions, so that history never
+      // actually accumulated. predicted_probability prefers raw_probability
+      // (Claude's UNSHRUNK self-report, llm-divergence only) so calibration
+      // measures the model's own calibration, not the blended trading
+      // decision — see STRATEGY_PLAN.md Phase 1. Mechanical strategies have
+      // no separate raw estimate; p_shrunk IS the belief there.
+      const tickerKey = trade.ticker.trim().toUpperCase()
+      if (!pendingPredictionTickers.has(tickerKey)) {
         try {
           createPrediction({
             market_title: opp.title,
@@ -591,7 +705,12 @@ export async function runAutopilotCycle(): Promise<AutopilotReport> {
             resolution_date: opp.resolution_date ?? undefined,
             source: 'autopilot',
             strategy: opp.strategy,
+            confidence: opp.confidence,
+            execution_price: trade.price,
+            haircut_pp_applied: trade.haircut_pp_applied,
+            kelly_fraction_used: trade.kelly_fraction_used,
           })
+          pendingPredictionTickers.add(tickerKey)
         } catch {
           // prediction logging is non-critical
         }
@@ -670,6 +789,10 @@ interface GuardrailContext {
   clusterExposure: Map<string, number>
   openTickers: Set<string>
   justSoldTickers: Set<string>
+  // Per-strategy calibration snapshot for the go-live gate — empty unless
+  // !dry_run && require_calibration_to_go_live (runAutopilotCycle only pays
+  // for getCalibrationStats() when it's actually needed).
+  calibrationByStrategy: Map<string, StrategyStats>
 }
 
 type Decision =
@@ -696,6 +819,7 @@ function evaluateOpportunity(opp: StrategyOpportunity, ctx: GuardrailContext): D
       skip_reason: reason,
       strategy: opp.strategy,
       rationale: opp.rationale,
+      confidence: opp.confidence,
       ...extra,
     },
   })
@@ -712,6 +836,24 @@ function evaluateOpportunity(opp: StrategyOpportunity, ctx: GuardrailContext): D
   )
   if (blacklisted) {
     return skip(`Category "${opp.category}" is blacklisted`)
+  }
+
+  // GO-LIVE GATE, evaluated PER STRATEGY (see the comment at its call site in
+  // runAutopilotCycle for why this moved from a whole-cycle halt to a
+  // per-opportunity skip). ctx.calibrationByStrategy is empty whenever the
+  // gate is off or we're in dry-run, so this is a no-op in both those cases.
+  if (!ap.dry_run && ap.require_calibration_to_go_live) {
+    const stats = ctx.calibrationByStrategy.get(opp.strategy)
+    const required = ap.min_resolved_predictions_for_live
+    const enoughSamples = !!stats && stats.resolved >= required
+    const beatsMarket = !!stats && stats.market_brier != null && stats.brier != null && stats.brier < stats.market_brier
+    if (!enoughSamples || !beatsMarket) {
+      return skip(
+        !enoughSamples
+          ? `Live trading gate not met for strategy "${opp.strategy}": only ${stats?.resolved ?? 0}/${required} predictions resolved for this strategy. Switch to dry-run and keep scanning until enough history accumulates.`
+          : `Live trading gate not met for strategy "${opp.strategy}": Brier ${stats!.brier!.toFixed(3)} does not beat market Brier ${stats!.market_brier!.toFixed(3)} over ${stats!.resolved} resolved predictions for this strategy.`
+      )
+    }
   }
 
   // Absolute horizon backstop — NOT the same check as scan.ts's
@@ -778,6 +920,17 @@ function evaluateOpportunity(opp: StrategyOpportunity, ctx: GuardrailContext): D
   // --- Kelly sizing (all dollars) ------------------------------------------
   // b = net odds = payout/stake for the chosen side; p = shrunk win probability.
   //
+  // Composition ceiling, worth stating explicitly: for llm-divergence,
+  // p_shrunk already discounts Claude's raw estimate 60/40 toward the market
+  // price (scan.ts SHRINK_CLAUDE = 0.40), so the fraction of bankroll staked
+  // here is bounded by f ≤ kelly_fraction × SHRINK_CLAUDE ≈ 0.25 × 0.40 = 10%
+  // of what naive full-Kelly at Claude's RAW (unshrunk) estimate would size —
+  // before the confidence haircut below shrinks it further. Two independent,
+  // separately-tuned mechanisms (this shrink and the haircut below) both
+  // exist to address the SAME risk (unquantified LLM estimation error), with
+  // no joint calibration between them — see docs/STRATEGY_PLAN.md, which
+  // calls the shrink split itself "a guess with no empirical basis."
+  //
   // Kelly assumes p is the TRUE probability. Ours is an LLM estimate blended
   // with a market price, carrying substantial unquantified error — and Kelly
   // is hypersensitive to error in p: overestimating by a few points turns
@@ -786,17 +939,37 @@ function evaluateOpportunity(opp: StrategyOpportunity, ctx: GuardrailContext): D
   // from the point estimate.
   const b = (1 - price) / price
   const pRaw = opp.direction === 'YES' ? opp.p_shrunk : 1 - opp.p_shrunk
+
+  // Track-record-aware confidence: a strategy's self-reported confidence is
+  // only as trustworthy as the track record backing it. Both mechanical
+  // strategies hardcode confidence HIGH purely to clear the min_confidence
+  // gate (see their own "gated on the safety margin above" comments) — with
+  // ZERO production history behind that label, it's indistinguishable from a
+  // genuinely-earned HIGH call, yet draws the SAME smallest haircut (3pp
+  // default) as one. Cap the EFFECTIVE tier at MEDIUM until the strategy has
+  // its own resolved sample at least as large as the go-live floor
+  // (min_resolved_predictions_for_live) — applies uniformly to every
+  // strategy, including a brand-new llm-divergence deployment, not just the
+  // mechanical ones specifically.
+  const strategyStats = ctx.calibrationByStrategy.get(opp.strategy)
+  const strategyProven = (strategyStats?.resolved ?? 0) >= ap.min_resolved_predictions_for_live
+  const effectiveConfidence: 'LOW' | 'MEDIUM' | 'HIGH' =
+    !strategyProven && opp.confidence === 'HIGH' ? 'MEDIUM' : opp.confidence
+
   const haircutPp =
-    opp.confidence === 'HIGH' ? ap.kelly_haircut_high_pp
-    : opp.confidence === 'MEDIUM' ? ap.kelly_haircut_medium_pp
+    effectiveConfidence === 'HIGH' ? ap.kelly_haircut_high_pp
+    : effectiveConfidence === 'MEDIUM' ? ap.kelly_haircut_medium_pp
     : ap.kelly_haircut_low_pp
   const p = Math.max(0.01, pRaw - (haircutPp ?? 0) / 100)
   const q = 1 - p
   const kellyFull = (p * b - q) / b
   if (!Number.isFinite(kellyFull) || kellyFull <= 0) {
+    const trackRecordNote = effectiveConfidence !== opp.confidence
+      ? ` — capped from self-reported ${opp.confidence} pending track record (${strategyStats?.resolved ?? 0}/${ap.min_resolved_predictions_for_live} resolved)`
+      : ''
     return skip(
-      `Kelly criterion is non-positive after the ${haircutPp}pp ${opp.confidence}-confidence ` +
-      `haircut (win prob ${(pRaw * 100).toFixed(1)}% → ${(p * 100).toFixed(1)}% at ${priceCents}¢)`
+      `Kelly criterion is non-positive after the ${haircutPp}pp ${effectiveConfidence}-confidence ` +
+      `haircut (win prob ${(pRaw * 100).toFixed(1)}% → ${(p * 100).toFixed(1)}% at ${priceCents}¢)${trackRecordNote}`
     )
   }
   const f = ap.kelly_fraction * kellyFull
@@ -847,6 +1020,9 @@ function evaluateOpportunity(opp: StrategyOpportunity, ctx: GuardrailContext): D
       executed: false, // caller sets true after a live order succeeds
       strategy: opp.strategy,
       rationale: opp.rationale,
+      confidence: opp.confidence,
+      haircut_pp_applied: haircutPp,
+      kelly_fraction_used: ap.kelly_fraction,
     },
   }
 }

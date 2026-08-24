@@ -1,6 +1,6 @@
 import fs from 'fs'
 import path from 'path'
-import { MacroView, SessionState, AppSettings, AutopilotSettings, AutopilotRun, Prediction, CalibrationStats, EdgeBucketStats, StrategyStats, Lesson, MistakeType, MistakeTypeStats } from './types'
+import { MacroView, SessionState, AppSettings, AutopilotSettings, AutopilotRun, Prediction, CalibrationStats, EdgeBucketStats, StrategyStats, Lesson, MistakeType, MistakeTypeStats, ConfidenceTierStats, SkipReasonStats, AutopilotFunnelStats } from './types'
 
 // Support DATA_DIR env var for cloud deployments (Railway mounts a volume here)
 const DATA_DIR = process.env.DATA_DIR ?? path.join(process.cwd(), 'data')
@@ -53,6 +53,13 @@ const DEFAULT_AUTOPILOT: AutopilotSettings = {
   // no momentum to cut, so a fixed-% stop-loss sells exactly when the entry
   // thesis (per the shrunk estimate) has gotten STRONGER, not weaker. Still
   // available for anyone who wants to test it themselves; just not assumed.
+  // PROVENANCE: the 562-trade study is an INHERITED, unaudited prior — its
+  // raw data doesn't exist in this repo and can't be independently verified
+  // here. Applied unevenly historically: a stop_loss_pct mechanism was fully
+  // code-deleted, while take_profit_pct was kept as this opt-in setting. Once
+  // AutopilotTrade/Prediction exit tagging (exited_early/exit_price/exit_ts)
+  // has accumulated enough of this system's OWN resolved history, re-test the
+  // conclusion on real data rather than assuming either answer.
   exit_enabled: false,
   take_profit_pct: 40,
   scan_limit: 40,
@@ -77,6 +84,7 @@ const DEFAULT_AUTOPILOT: AutopilotSettings = {
   dated_favorites_max_price_cents: 90,
   dated_favorites_min_days: 14,
   dated_favorites_max_days: 56,
+  dated_favorites_min_volume_usd: 500,
   strategy_settlement_snipe_enabled: false,
   settlement_snipe_margin_f: 2,
   settlement_snipe_max_confidence_pct: 95,
@@ -271,7 +279,15 @@ export function createLesson(data: Omit<Lesson, 'id' | 'created_at'>): Lesson {
 }
 
 export function getRelevantLessons(category: string, keywords: string[], limit = 5): Lesson[] {
-  const lessons = getLessons()
+  // Every caller of this function feeds the LLM (scan.ts's batch scanner,
+  // the analyze routes) — so exclude lessons whose strategy is a mechanical
+  // one (dated-favorites, settlement-snipe). Those losses are expected
+  // variance around a deterministic, deliberately-conservative model, not a
+  // diagnosable REASONING error; surfacing them under a reasoning-error
+  // taxonomy (overconfidence, anchoring, ...) would train the LLM on a
+  // mislabeled signal. undefined/'llm-divergence' (legacy rows predate the
+  // strategy field and were all the LLM scanner) pass through unfiltered.
+  const lessons = getLessons().filter((l) => !l.strategy || l.strategy === 'llm-divergence')
   if (lessons.length === 0) return []
 
   const scored = lessons.map((l) => {
@@ -362,13 +378,81 @@ export function getCalibrationStats(): CalibrationStats {
   ]
   const actionablePreds = predictions.filter((p) => p.actionable !== false)
 
-  // Shared by both by_edge_bucket and by_strategy below — the exact same
-  // payoff math, computed once. Duplicating this a second time is exactly
-  // how a fee/field bug independently recurs across call sites.
-  function computeRoiStats(rows: Prediction[]): { resolved: number; realized_roi_pct: number | null; hit_rate: number | null; brier: number | null } {
+  // Entry price: prefer the recorded execution price; otherwise derive it
+  // from market_price (YES ask, so a NO entry costs 1 − that). Module-scope
+  // (not nested in computeRoiStats) so daysHeld and computeRoiStats agree on
+  // exactly one definition of "entry."
+  const entryOf = (p: Prediction) => p.execution_price ?? (p.direction === 'YES' ? p.market_price : 1 - p.market_price)
+
+  // Market's implied P(YES) at prediction time. Prefer the MIDPOINT of a
+  // captured two-sided quote — market_price alone is the YES ASK, biased
+  // upward by half the spread, which hands Claude free advantage on every
+  // observation if used as the market's own forecast. Hoisted to module
+  // scope (not just used for the pooled market_brier below) so
+  // computeGroupMarketBrier can share the exact same definition per-strategy.
+  const marketProbOf = (p: Prediction): number | null => {
+    if (p.market_yes_bid != null && p.market_yes_ask != null) {
+      return (p.market_yes_bid + p.market_yes_ask) / 2
+    }
+    return null
+  }
+  const brierAgainst = (rows: Prediction[], probOf: (p: Prediction) => number) => {
+    const sum = rows.reduce((acc, p) => {
+      const actual = p.outcome === 'YES' ? 1 : 0
+      return acc + Math.pow(probOf(p) - actual, 2)
+    }, 0)
+    return parseFloat((sum / rows.length).toFixed(4))
+  }
+
+  // Holding period in days for a RESOLVED row: created_at → the moment
+  // capital was actually freed. For an early-exited position that's exit_ts
+  // (the sale), NOT resolved_at — the market may settle long after the
+  // position was already closed, and counting that dead time would
+  // understate the strategy's true capital velocity. Held-to-resolution rows
+  // use resolved_at, falling back to resolution_date for legacy rows that
+  // predate that field. Floors at 1 so same-day resolution doesn't divide
+  // toward infinity. null (fails closed, excluded from the per-dollar-day
+  // metric only — never from hit rate/Brier/plain ROI) when neither end
+  // timestamp parses.
+  function daysHeld(p: Prediction): number | null {
+    const startMs = Date.parse(p.created_at)
+    if (!Number.isFinite(startMs)) return null
+    const endIso = p.exited_early && p.exit_ts ? p.exit_ts : (p.resolved_at ?? p.resolution_date)
+    if (!endIso) return null
+    const endMs = Date.parse(endIso)
+    if (!Number.isFinite(endMs)) return null
+    const days = (endMs - startMs) / (1000 * 60 * 60 * 24)
+    return Number.isFinite(days) ? Math.max(1, days) : null
+  }
+
+  // Realized cash payoff per contract, entry to exit. A position sold early
+  // by the exit pass realized its proceeds AT THE SALE — whatever the
+  // underlying market goes on to settle at afterward is no longer this
+  // trade's economics, so exited_early rows use the recorded (fee-net)
+  // exit_price instead of the resolution-implied win/loss payoff. Direction
+  // correctness (hit_rate/Brier) still uses the eventual outcome — an early
+  // exit doesn't change whether the CALL was right, only how much of the
+  // move was captured.
+  function payoffOf(p: Prediction, entry: number): number {
+    if (p.exited_early && p.exit_price != null && Number.isFinite(p.exit_price)) {
+      return p.exit_price - entry
+    }
+    return p.direction === p.outcome ? 1 - entry : -entry
+  }
+
+  // Shared by by_edge_bucket, by_strategy, and by_confidence below — the
+  // exact same payoff math, computed once. Duplicating this a second time is
+  // exactly how a fee/field bug independently recurs across call sites.
+  function computeRoiStats(rows: Prediction[]): {
+    resolved: number
+    realized_roi_pct: number | null
+    realized_roi_per_dollar_day: number | null
+    hit_rate: number | null
+    brier: number | null
+  } {
     const settled = rows.filter((p) => p.outcome !== undefined)
     if (settled.length === 0) {
-      return { resolved: 0, realized_roi_pct: null, hit_rate: null, brier: null }
+      return { resolved: 0, realized_roi_pct: null, realized_roi_per_dollar_day: null, hit_rate: null, brier: null }
     }
     const hit_rate = settled.filter((p) => p.direction === p.outcome).length / settled.length
     const brierSum = settled.reduce((s, p) => {
@@ -377,9 +461,6 @@ export function getCalibrationStats(): CalibrationStats {
     }, 0)
     const brier = parseFloat((brierSum / settled.length).toFixed(4))
 
-    // Entry price: prefer the recorded execution price; otherwise derive it
-    // from market_price (YES ask, so a NO entry costs 1 − that).
-    const entryOf = (p: Prediction) => p.execution_price ?? (p.direction === 'YES' ? p.market_price : 1 - p.market_price)
     const priced = settled.filter((p) => {
       const entry = entryOf(p)
       return Number.isFinite(entry) && entry > 0 && entry < 1
@@ -391,17 +472,48 @@ export function getCalibrationStats(): CalibrationStats {
       for (const p of priced) {
         const entry = entryOf(p)
         cost += entry
-        payoff += p.direction === p.outcome ? 1 - entry : -entry
+        payoff += payoffOf(p, entry)
       }
       realized_roi_pct = cost > 0 ? parseFloat(((payoff / cost) * 100).toFixed(1)) : null
+    }
+
+    // Same payoff math, denominated in capital-DAYS rather than capital
+    // alone — a 3% edge resolving in 2 days and an 8% edge resolving in 60
+    // days are not comparable on realized_roi_pct alone. Rows with no usable
+    // holding-period timestamp are excluded from this sum only.
+    let realized_roi_per_dollar_day: number | null = null
+    {
+      let costDays = 0
+      let payoff = 0
+      for (const p of priced) {
+        const dh = daysHeld(p)
+        if (dh == null) continue
+        const entry = entryOf(p)
+        costDays += entry * dh
+        payoff += payoffOf(p, entry)
+      }
+      realized_roi_per_dollar_day = costDays > 0 ? parseFloat(((payoff / costDays) * 100).toFixed(3)) : null
     }
 
     return {
       resolved: settled.length,
       realized_roi_pct,
+      realized_roi_per_dollar_day,
       hit_rate: parseFloat(hit_rate.toFixed(3)),
       brier,
     }
+  }
+
+  // Market's Brier score over one row group, same midpoint-preferred logic
+  // as the pooled market_brier below — factored out so by_strategy can reuse
+  // it instead of re-deriving the math a second time.
+  function computeGroupMarketBrier(rows: Prediction[]): number | null {
+    const settled = rows.filter((p) => p.outcome !== undefined)
+    const withMidpoint = settled.filter((p) => marketProbOf(p) != null)
+    if (withMidpoint.length > 0) return brierAgainst(withMidpoint, (p) => marketProbOf(p)!)
+    const withMarketPrice = settled.filter((p) => p.market_price != null)
+    if (withMarketPrice.length === 0) return null
+    return brierAgainst(withMarketPrice, (p) => p.market_price)
   }
 
   const by_edge_bucket: EdgeBucketStats[] = EDGE_BUCKETS.map(({ label, min, max }) => {
@@ -415,6 +527,7 @@ export function getCalibrationStats(): CalibrationStats {
         ? parseFloat((inBucket.reduce((s, p) => s + p.edge_pct, 0) / inBucket.length).toFixed(2))
         : 0,
       realized_roi_pct: roi.realized_roi_pct,
+      realized_roi_per_dollar_day: roi.realized_roi_per_dollar_day,
       hit_rate: roi.hit_rate,
     }
   })
@@ -435,9 +548,32 @@ export function getCalibrationStats(): CalibrationStats {
       resolved: roi.resolved,
       hit_rate: roi.hit_rate,
       realized_roi_pct: roi.realized_roi_pct,
+      realized_roi_per_dollar_day: roi.realized_roi_per_dollar_day,
       brier: roi.brier,
+      market_brier: computeGroupMarketBrier(inStrategy),
     }
   })
+
+  // Realized ROI by the CONFIDENCE TIER that actually drove Kelly sizing —
+  // only autopilot-sourced rows carry `confidence` (see AutopilotTrade →
+  // createPrediction in autopilot.ts), so this is silently empty until that
+  // wiring exists there; rows with no confidence tag are omitted, not
+  // miscategorized into a bucket they were never tagged for.
+  const CONFIDENCE_TIERS: Array<'LOW' | 'MEDIUM' | 'HIGH'> = ['LOW', 'MEDIUM', 'HIGH']
+  const by_confidence: ConfidenceTierStats[] = CONFIDENCE_TIERS
+    .map((confidence) => {
+      const inTier = actionablePreds.filter((p) => p.confidence === confidence)
+      const roi = computeRoiStats(inTier)
+      return {
+        confidence,
+        count: inTier.length,
+        resolved: roi.resolved,
+        hit_rate: roi.hit_rate,
+        realized_roi_pct: roi.realized_roi_pct,
+        brier: roi.brier,
+      }
+    })
+    .filter((s) => s.count > 0)
 
   const empty: CalibrationStats = {
     total_predictions: predictions.length,
@@ -459,6 +595,7 @@ export function getCalibrationStats(): CalibrationStats {
     market_brier_midpoint_samples: 0,
     by_strategy,
     by_mistake_type: computeMistakeTypeStats(),
+    by_confidence,
   }
 
   if (resolved.length === 0) return empty
@@ -479,29 +616,15 @@ export function getCalibrationStats(): CalibrationStats {
 
   // Market Brier score: (market_prob - actual_outcome)^2.
   //
-  // Score the market at its MIDPOINT where a two-sided quote was captured.
-  // market_price is the YES ASK, which is biased upward by half the spread —
-  // using it hands Claude free advantage on every observation. Prefer
-  // midpoint rows; fall back to ask-priced legacy rows only when no midpoint
-  // rows exist at all, and report the sample count so the UI can flag a
-  // fallback comparison as biased rather than presenting it as clean.
-  const marketProbOf = (p: Prediction): number | null => {
-    if (p.market_yes_bid != null && p.market_yes_ask != null) {
-      return (p.market_yes_bid + p.market_yes_ask) / 2
-    }
-    return null
-  }
+  // Score the market at its MIDPOINT where a two-sided quote was captured —
+  // fall back to ask-priced legacy rows only when no midpoint rows exist at
+  // all, and report the sample count so the UI can flag a fallback
+  // comparison as biased rather than presenting it as clean. (marketProbOf /
+  // brierAgainst are defined once, above, and shared with computeGroupMarketBrier.)
   const resolvedWithMidpoint = resolved.filter((p) => marketProbOf(p) != null)
   const market_brier_midpoint_samples = resolvedWithMidpoint.length
 
   let market_brier: number | null = null
-  const brierAgainst = (rows: Prediction[], probOf: (p: Prediction) => number) => {
-    const sum = rows.reduce((acc, p) => {
-      const actual = p.outcome === 'YES' ? 1 : 0
-      return acc + Math.pow(probOf(p) - actual, 2)
-    }, 0)
-    return parseFloat((sum / rows.length).toFixed(4))
-  }
   if (resolvedWithMidpoint.length > 0) {
     market_brier = brierAgainst(resolvedWithMidpoint, (p) => marketProbOf(p)!)
   } else {
@@ -610,6 +733,7 @@ export function getCalibrationStats(): CalibrationStats {
     market_brier_midpoint_samples,
     by_strategy,
     by_mistake_type: computeMistakeTypeStats(),
+    by_confidence,
   }
 }
 
@@ -642,4 +766,64 @@ export function appendAutopilotRun(run: AutopilotRun): void {
   const runs = readJson<AutopilotRun[]>(AUTOPILOT_LOG_FILE, [])
   runs.unshift(run) // newest first
   writeJson(AUTOPILOT_LOG_FILE, runs.slice(0, MAX_AUTOPILOT_RUNS))
+}
+
+// Ordered so a more specific pattern is checked before a more general one
+// that could also match it (e.g. the cluster/daily-spend "would exceed"
+// belt-and-braces re-checks share the word "exposure"/"spend" with their
+// primary-check siblings, so distinctive phrases are matched as SUBSTRINGS,
+// not prefixes — several skip messages interpolate a ticker/dollar value
+// BEFORE the diagnostic phrase, so `.startsWith()` would silently miss them).
+// Mirrors every skip()/informational-skip call site in autopilot.ts exactly.
+const SKIP_REASON_CATEGORIES: Array<{ category: string; test: (reason: string) => boolean }> = [
+  { category: 'Below min effective edge', test: (r) => r.startsWith('Effective edge') },
+  { category: 'Below min confidence', test: (r) => r.startsWith('Confidence ') },
+  { category: 'Category blacklisted', test: (r) => r.includes('is blacklisted') },
+  { category: 'No/unverifiable resolution date', test: (r) => r.includes('cannot verify horizon') },
+  { category: 'Beyond absolute horizon ceiling', test: (r) => r.includes('horizon ceiling') },
+  { category: 'No valid execution price', test: (r) => r.includes('No valid execution price') || r.includes('outside valid 1') },
+  { category: 'Already holding position (no averaging)', test: (r) => r.includes('Already holding a position') },
+  { category: 'Just sold this cycle', test: (r) => r.includes('Just sold this position') },
+  { category: 'Max open positions reached', test: (r) => r.startsWith('Open positions') },
+  { category: 'Cluster exposure limit', test: (r) => r.includes('Cluster "') },
+  { category: 'Daily spend limit', test: (r) => r.includes('Daily spend') },
+  { category: 'Total exposure limit', test: (r) => r.includes('Total exposure') },
+  { category: 'Kelly non-positive after haircut', test: (r) => r.includes('Kelly criterion is non-positive') },
+  { category: 'Stake buys < 1 contract', test: (r) => r.includes('buys less than 1 contract') },
+  { category: 'Insufficient balance', test: (r) => r.includes('Insufficient balance') },
+  { category: 'Maker mode: no live bid to rest on', test: (r) => r.includes('Maker mode: no live bid') },
+  { category: 'Exit: no live quote/bid', test: (r) => r.includes('Could not fetch live quote') || r.includes('No live bid to sell into') },
+  { category: 'Exit check failed', test: (r) => r.includes('Exit check failed') },
+  { category: 'Go-live calibration gate', test: (r) => r.includes('Live trading gate not met') },
+  { category: 'Near miss (informational, zero-buy cycles only)', test: (r) => r.startsWith('Near miss') },
+]
+
+// Which guardrail actually binds — computed from EVERY skip logged in
+// autopilot_log.json (all trades carrying a skip_reason, across every run
+// still in the retention window), plus the tier-1 (pre-guardrail) rejection
+// count each run now records unconditionally. Answers "is the edge gate
+// starving the funnel, or is nothing even reaching it" as a measured number
+// instead of arithmetic on the min_effective_edge/shrinkage formula.
+export function getAutopilotFunnelStats(): AutopilotFunnelStats {
+  const runs = getAutopilotRuns()
+  const counts = new Map<string, number>()
+  let total_skips = 0
+  let total_tier1_screened_out = 0
+
+  for (const run of runs) {
+    total_tier1_screened_out += run.opportunities_screened_out ?? 0
+    for (const t of run.trades) {
+      if (!t.skip_reason) continue
+      total_skips++
+      const match = SKIP_REASON_CATEGORIES.find((c) => c.test(t.skip_reason!))
+      const category = match?.category ?? 'Other'
+      counts.set(category, (counts.get(category) ?? 0) + 1)
+    }
+  }
+
+  const by_reason: SkipReasonStats[] = Array.from(counts.entries())
+    .map(([category, count]) => ({ category, count }))
+    .sort((a, b) => b.count - a.count)
+
+  return { total_skips, total_tier1_screened_out, by_reason }
 }

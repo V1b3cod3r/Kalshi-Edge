@@ -25,4 +25,13 @@ export interface StrategyOpportunity {
   // of p_shrunk when present, so calibration measures CLAUDE's calibration,
   // not the blended trading decision — see STRATEGY_PLAN.md Phase 1.
   raw_probability?: number
+  // Capital-velocity fields, mirroring ScanOpportunity's — populated by every
+  // strategy that has a resolution_date (all three currently do). Without
+  // these, autopilot's cross-strategy sort fell back to raw edge_pct only,
+  // silently discarding the capital-annualized ranking scan.ts already
+  // computes and uses for its own single-strategy sort. null when
+  // resolution_date is null/unparseable; days_to_resolution floors at 1 so a
+  // same-day market doesn't divide toward infinity.
+  days_to_resolution?: number | null
+  annualized_edge_pct?: number | null
 }

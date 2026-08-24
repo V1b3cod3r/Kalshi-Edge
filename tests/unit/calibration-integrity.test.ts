@@ -21,6 +21,11 @@ function seedLessons(rows: any[]) {
   writeFileSync(path.join(tmpDir, 'data', 'lessons.json'), JSON.stringify(rows, null, 2))
 }
 
+function seedAutopilotRuns(runs: any[]) {
+  mkdirSync(path.join(tmpDir, 'data'), { recursive: true })
+  writeFileSync(path.join(tmpDir, 'data', 'autopilot_log.json'), JSON.stringify(runs, null, 2))
+}
+
 beforeEach(() => {
   tmpDir = mkdtempSync(path.join(tmpdir(), 'kalshi-calib-'))
   vi.spyOn(process, 'cwd').mockReturnValue(tmpDir)
@@ -275,5 +280,242 @@ describe('losses grouped by mistake type (root-cause rollup)', () => {
     const { getCalibrationStats } = await import('@/lib/storage')
     const anchoring = getCalibrationStats().by_mistake_type.find((m) => m.mistake_type === 'anchoring')!
     expect(anchoring.latest_example).toBe('Do the newer thing')
+  })
+})
+
+describe('per-strategy market_brier (go-live gate needs a strategy-scoped comparison)', () => {
+  it('scores each strategy against the market MIDPOINT over only that strategy\'s own rows', async () => {
+    seedPredictions([
+      // llm-divergence: market at 50/50 midpoint, Claude said 0.9, outcome NO
+      // → Claude Brier (0.9-0)^2=0.81, market Brier (0.5-0)^2=0.25.
+      {
+        ...base, id: 'll1', ticker: 'LL1', predicted_probability: 0.9, direction: 'YES',
+        outcome: 'NO', edge_pct: 5, market_price: 0.5, market_yes_bid: 0.45, market_yes_ask: 0.55,
+        strategy: 'llm-divergence', actionable: true,
+      },
+      // dated-favorites: market at 90/10... deliberately different, must not
+      // pollute llm-divergence's number or vice versa.
+      {
+        ...base, id: 'df1', ticker: 'DF1', predicted_probability: 0.9, direction: 'YES',
+        outcome: 'YES', edge_pct: 5, market_price: 0.9, market_yes_bid: 0.88, market_yes_ask: 0.92,
+        strategy: 'dated-favorites', actionable: true,
+      },
+    ])
+    const { getCalibrationStats } = await import('@/lib/storage')
+    const by = getCalibrationStats().by_strategy
+
+    const llm = by.find((s) => s.strategy === 'llm-divergence')!
+    expect(llm.market_brier).toBeCloseTo(0.25, 4)
+
+    const df = by.find((s) => s.strategy === 'dated-favorites')!
+    // market midpoint 0.90, outcome YES → (0.90-1)^2 = 0.01
+    expect(df.market_brier).toBeCloseTo(0.01, 4)
+  })
+
+  it('is null for a strategy with no midpoint-quoted resolved rows', async () => {
+    seedPredictions([
+      {
+        ...base, id: 'df1', ticker: 'DF1', predicted_probability: 0.9, direction: 'YES',
+        outcome: 'YES', edge_pct: 5, market_price: 0.9, strategy: 'dated-favorites', actionable: true,
+      },
+    ])
+    const { getCalibrationStats } = await import('@/lib/storage')
+    // No bid/ask AND market_price fallback IS present, so this actually
+    // falls back to the ask-priced comparison, not null — confirm that path.
+    const df = getCalibrationStats().by_strategy.find((s) => s.strategy === 'dated-favorites')!
+    expect(df.market_brier).toBeCloseTo(Math.pow(0.9 - 1, 2), 4)
+  })
+})
+
+describe('realized ROI per dollar-day (capital velocity)', () => {
+  it('weights payoff by cost × days held, not cost alone', async () => {
+    // Two winning trades, identical cost/payoff, different holding periods:
+    // one resolves in 1 day, the other in 10. Per-dollar-day ROI must be
+    // materially higher for the fast one when isolated.
+    const fast = {
+      ...base, id: 'fast', ticker: 'FAST', predicted_probability: 0.7, direction: 'YES',
+      outcome: 'YES', edge_pct: 5, market_price: 0.5, execution_price: 0.5, actionable: true,
+      created_at: new Date('2025-01-01T00:00:00Z').toISOString(),
+      resolved_at: new Date('2025-01-02T00:00:00Z').toISOString(), // 1 day
+    }
+    const slow = {
+      ...base, id: 'slow', ticker: 'SLOW', predicted_probability: 0.7, direction: 'YES',
+      outcome: 'YES', edge_pct: 5, market_price: 0.5, execution_price: 0.5, actionable: true,
+      created_at: new Date('2025-01-01T00:00:00Z').toISOString(),
+      resolved_at: new Date('2025-01-11T00:00:00Z').toISOString(), // 10 days
+    }
+    seedPredictions([fast])
+    const { getCalibrationStats } = await import('@/lib/storage')
+    const fastBucket = getCalibrationStats().by_edge_bucket.find((b) => b.bucket === '4-6%')!
+    // payoff 0.5 on cost 0.5 over 1 day → (0.5/(0.5*1))*100 = 100
+    expect(fastBucket.realized_roi_per_dollar_day).toBeCloseTo(100, 1)
+
+    vi.resetModules()
+    seedPredictions([slow])
+    const { getCalibrationStats: getCalibrationStats2 } = await import('@/lib/storage')
+    const slowBucket = getCalibrationStats2().by_edge_bucket.find((b) => b.bucket === '4-6%')!
+    // same payoff/cost, 10x the days → 10x smaller per-dollar-day ROI
+    expect(slowBucket.realized_roi_per_dollar_day).toBeCloseTo(10, 1)
+  })
+
+  it('excludes a row from the metric (not from plain ROI) when no holding-period timestamp parses', async () => {
+    seedPredictions([
+      {
+        ...base, id: 'nodate', ticker: 'ND', predicted_probability: 0.7, direction: 'YES',
+        outcome: 'YES', edge_pct: 5, market_price: 0.5, execution_price: 0.5, actionable: true,
+        created_at: 'not-a-date', // fails to parse → daysHeld returns null
+      },
+    ])
+    const { getCalibrationStats } = await import('@/lib/storage')
+    const bucket = getCalibrationStats().by_edge_bucket.find((b) => b.bucket === '4-6%')!
+    expect(bucket.realized_roi_pct).toBeCloseTo(100, 3) // plain ROI still computed
+    expect(bucket.realized_roi_per_dollar_day).toBeNull() // per-dollar-day cannot be
+  })
+})
+
+describe('early-exit rows use REALIZED exit proceeds, not the resolution-implied payoff', () => {
+  it('prices an exited-early row at exit_price, ignoring what the market later settled at', async () => {
+    // Bought at 50c, exited early at 70c (a win captured), but the market
+    // later settled NO (would have been a full loss if held). The realized
+    // trade was a WIN at 70c — exit_price must drive the payoff, not outcome.
+    seedPredictions([
+      {
+        ...base, id: 'exited', ticker: 'EX', predicted_probability: 0.8, direction: 'YES',
+        outcome: 'NO', edge_pct: 5, market_price: 0.5, execution_price: 0.5, actionable: true,
+        exited_early: true, exit_price: 0.7,
+      },
+    ])
+    const { getCalibrationStats } = await import('@/lib/storage')
+    const bucket = getCalibrationStats().by_edge_bucket.find((b) => b.bucket === '4-6%')!
+    // payoff = exit_price(0.7) - entry(0.5) = +0.2 on cost 0.5 → ROI +40%
+    expect(bucket.realized_roi_pct).toBeCloseTo(40, 1)
+  })
+
+  it('uses exit_ts (not resolved_at) as the end of the holding period for an exited row', async () => {
+    seedPredictions([
+      {
+        ...base, id: 'exited', ticker: 'EX', predicted_probability: 0.8, direction: 'YES',
+        outcome: 'YES', edge_pct: 5, market_price: 0.5, execution_price: 0.5, actionable: true,
+        exited_early: true, exit_price: 0.6,
+        created_at: new Date('2025-01-01T00:00:00Z').toISOString(),
+        exit_ts: new Date('2025-01-02T00:00:00Z').toISOString(),   // 1 day held
+        resolved_at: new Date('2025-06-01T00:00:00Z').toISOString(), // market settled 5 months later
+      },
+    ])
+    const { getCalibrationStats } = await import('@/lib/storage')
+    const bucket = getCalibrationStats().by_edge_bucket.find((b) => b.bucket === '4-6%')!
+    // payoff 0.1 on cost 0.5 over 1 day (not 5 months) → (0.1/0.5)*100 = 20
+    expect(bucket.realized_roi_per_dollar_day).toBeCloseTo(20, 1)
+  })
+})
+
+describe('by_confidence — realized performance grouped by the tier that drove Kelly sizing', () => {
+  it('groups actionable rows by confidence and omits untagged rows', async () => {
+    seedPredictions([
+      {
+        ...base, id: 'h1', ticker: 'H1', predicted_probability: 0.7, direction: 'YES',
+        outcome: 'YES', edge_pct: 5, market_price: 0.5, execution_price: 0.5, actionable: true,
+        confidence: 'HIGH',
+      },
+      {
+        ...base, id: 'm1', ticker: 'M1', predicted_probability: 0.7, direction: 'YES',
+        outcome: 'NO', edge_pct: 5, market_price: 0.5, execution_price: 0.5, actionable: true,
+        confidence: 'MEDIUM',
+      },
+      {
+        ...base, id: 'u1', ticker: 'U1', predicted_probability: 0.7, direction: 'YES',
+        outcome: 'YES', edge_pct: 5, market_price: 0.5, execution_price: 0.5, actionable: true,
+        // no confidence field at all
+      },
+    ])
+    const { getCalibrationStats } = await import('@/lib/storage')
+    const by = getCalibrationStats().by_confidence
+
+    expect(by.map((s) => s.confidence).sort()).toEqual(['HIGH', 'MEDIUM'])
+    expect(by.find((s) => s.confidence === 'HIGH')!.count).toBe(1)
+    expect(by.find((s) => s.confidence === 'MEDIUM')!.count).toBe(1)
+  })
+})
+
+describe('getRelevantLessons excludes mechanical-strategy lessons from the LLM-facing lookup', () => {
+  it('never returns a lesson tagged with a non-llm-divergence strategy', async () => {
+    seedLessons([
+      {
+        id: 'l1', prediction_id: 'p1', market_title: 'M', category: 'Politics',
+        keywords: ['politics'], predicted_direction: 'YES', actual_outcome: 'NO',
+        predicted_probability: 0.8, market_price: 0.5, edge_pct: 8,
+        what_went_wrong: 'x', what_to_do_differently: 'y', mistake_type: 'overconfidence',
+        created_at: new Date().toISOString(), strategy: 'dated-favorites',
+      },
+      {
+        id: 'l2', prediction_id: 'p2', market_title: 'M', category: 'Politics',
+        keywords: ['politics'], predicted_direction: 'YES', actual_outcome: 'NO',
+        predicted_probability: 0.8, market_price: 0.5, edge_pct: 8,
+        what_went_wrong: 'x', what_to_do_differently: 'y', mistake_type: 'overconfidence',
+        created_at: new Date().toISOString(), strategy: 'llm-divergence',
+      },
+      {
+        id: 'l3', prediction_id: 'p3', market_title: 'M', category: 'Politics',
+        keywords: ['politics'], predicted_direction: 'YES', actual_outcome: 'NO',
+        predicted_probability: 0.8, market_price: 0.5, edge_pct: 8,
+        what_went_wrong: 'x', what_to_do_differently: 'y', mistake_type: 'overconfidence',
+        created_at: new Date().toISOString(), // legacy: no strategy field
+      },
+    ])
+    const { getRelevantLessons } = await import('@/lib/storage')
+    const results = getRelevantLessons('Politics', ['politics'], 10)
+    expect(results.map((l) => l.id).sort()).toEqual(['l2', 'l3'])
+  })
+})
+
+describe('getAutopilotFunnelStats — which guardrail actually binds', () => {
+  it('categorizes skip reasons by substring, distinguishing near-identical messages', async () => {
+    seedAutopilotRuns([
+      {
+        id: 'run1', started_at: new Date().toISOString(), finished_at: new Date().toISOString(),
+        status: 'ok', dry_run: true, markets_scanned: 5, opportunities_considered: 3,
+        opportunities_screened_out: 7,
+        trades: [
+          { ticker: 'A', side: 'yes', contracts: 0, price: 0, cost: 0, effective_edge_pct: 3, kelly_stake: 0, executed: false, skip_reason: 'Effective edge 3.0% below minimum 15%' },
+          { ticker: 'B', side: 'yes', contracts: 0, price: 0, cost: 0, effective_edge_pct: 3, kelly_stake: 0, executed: false, skip_reason: 'Effective edge 4.0% below minimum 15%' },
+          { ticker: 'C', side: 'yes', contracts: 0, price: 0, cost: 0, effective_edge_pct: 3, kelly_stake: 0, executed: false, skip_reason: 'Cluster "politics" exposure limit reached ($50.00 of $50.00)' },
+          { ticker: 'D', side: 'yes', contracts: 0, price: 0, cost: 0, effective_edge_pct: 3, kelly_stake: 0, executed: false, skip_reason: 'Total exposure limit reached ($250.00 of $250.00)' },
+          { ticker: 'E', side: 'yes', contracts: 5, price: 0.5, cost: 2.5, effective_edge_pct: 20, kelly_stake: 2.5, executed: true }, // not a skip
+        ],
+      },
+      {
+        id: 'run2', started_at: new Date().toISOString(), finished_at: new Date().toISOString(),
+        status: 'ok', dry_run: true, markets_scanned: 5, opportunities_considered: 1,
+        opportunities_screened_out: 3,
+        trades: [
+          { ticker: 'F', side: 'yes', contracts: 0, price: 0, cost: 0, effective_edge_pct: 3, kelly_stake: 0, executed: false, skip_reason: 'Some totally novel guardrail message never seen before' },
+        ],
+      },
+    ])
+    const { getAutopilotFunnelStats } = await import('@/lib/storage')
+    const stats = getAutopilotFunnelStats()
+
+    expect(stats.total_skips).toBe(5)
+    expect(stats.total_tier1_screened_out).toBe(10) // 7 + 3
+
+    const edge = stats.by_reason.find((r) => r.category === 'Below min effective edge')!
+    expect(edge.count).toBe(2)
+    const cluster = stats.by_reason.find((r) => r.category === 'Cluster exposure limit')!
+    expect(cluster.count).toBe(1)
+    const total = stats.by_reason.find((r) => r.category === 'Total exposure limit')!
+    expect(total.count).toBe(1)
+    // Cluster's message contains "exposure" too — must not be double-bucketed
+    // or miscategorized into 'Total exposure limit'.
+    expect(cluster.count + total.count).toBe(2)
+    const other = stats.by_reason.find((r) => r.category === 'Other')!
+    expect(other.count).toBe(1)
+  })
+
+  it('returns zeroed stats when no runs exist', async () => {
+    const { getAutopilotFunnelStats } = await import('@/lib/storage')
+    const stats = getAutopilotFunnelStats()
+    expect(stats.total_skips).toBe(0)
+    expect(stats.total_tier1_screened_out).toBe(0)
+    expect(stats.by_reason).toEqual([])
   })
 })

@@ -235,11 +235,15 @@ describe('runAutopilotCycle — SIT: cost control (disabled strategy never calls
       min_effective_edge_pct: 0.5,
       min_confidence: 'MEDIUM',
       // Kelly is hypersensitive near the top of the favorite band (b =
-      // (1-price)/price is small at 90c), so the default 3pp confidence
-      // haircut alone is enough to flip a ~2% pre-haircut edge NEGATIVE —
-      // a real, working guardrail interaction, not a bug, but not what
-      // THIS test (registry wiring) is checking. Zero it out here.
+      // (1-price)/price is small at 90c), so a confidence haircut alone is
+      // enough to flip a ~2% pre-haircut edge NEGATIVE — a real, working
+      // guardrail interaction, not a bug, but not what THIS test (registry
+      // wiring) is checking. Zero out both HIGH and MEDIUM: dated-favorites
+      // hardcodes confidence HIGH, but a fresh test DB has zero resolved
+      // history for it, so evaluateOpportunity's track-record-aware cap
+      // downgrades the EFFECTIVE tier to MEDIUM (see autopilot.ts).
       kelly_haircut_high_pp: 0,
+      kelly_haircut_medium_pp: 0,
     })
     installKalshiFetchMock({
       markets: [
@@ -310,7 +314,11 @@ describe('runAutopilotCycle — SIT: absolute horizon ceiling (never buy a multi
       dated_favorites_max_days: 90,
       min_effective_edge_pct: 0.5,
       min_confidence: 'MEDIUM',
+      // Both zeroed — see the cost-control test above for why: dated-favorites
+      // has zero resolved history in a fresh test DB, so the track-record-aware
+      // cap downgrades its self-reported HIGH confidence to MEDIUM.
       kelly_haircut_high_pp: 0,
+      kelly_haircut_medium_pp: 0,
     })
     installKalshiFetchMock({
       markets: [
@@ -496,6 +504,80 @@ describe('runAutopilotCycle — SIT: one strategy failing never aborts the cycle
     expect(report.status).toBe('ok')
     const buy = report.trades.find((t) => t.ticker === 'FED-DEC' && !t.skip_reason)
     expect(buy?.strategy).toBe('llm-divergence')
+  })
+})
+
+describe('runAutopilotCycle — SIT: go-live gate is PER STRATEGY, not a whole-cycle halt', () => {
+  it('skips (not halts) a strategy with no resolved history yet when the gate is on', async () => {
+    await seedSettings({
+      dry_run: false,
+      require_calibration_to_go_live: true,
+      min_resolved_predictions_for_live: 3,
+      strategy_llm_divergence_enabled: true,
+      min_effective_edge_pct: 4,
+      min_confidence: 'HIGH',
+      kelly_fraction: 1,
+      kelly_haircut_high_pp: 0,
+    })
+    let placed = false
+    installKalshiFetchMock({
+      markets: [rawMarket({ ticker: 'GATE-1', title: 'Gate candidate', yes_ask: 50, yes_bid: 48 })],
+      onOrderPlaced: () => { placed = true },
+    })
+    mockClaudeScan([{ ticker: 'GATE-1', estimate: 90 }])
+
+    const { runAutopilotCycle } = await import('@/lib/autopilot')
+    const report = await runAutopilotCycle()
+
+    // The whole cycle still completes — this is the point of moving the gate
+    // per-strategy: it no longer halts the account before balance/positions
+    // are even fetched.
+    expect(report.status).toBe('ok')
+    expect(placed).toBe(false)
+    const skip = report.trades.find((t) => t.ticker === 'GATE-1')
+    expect(skip?.skip_reason).toMatch(/Live trading gate not met for strategy "llm-divergence"/)
+    expect(skip?.skip_reason).toMatch(/0\/3 predictions resolved/)
+  })
+
+  it('places a live order once the strategy has enough resolved history and beats the market', async () => {
+    // Seed 3 resolved llm-divergence predictions, all correct and confident,
+    // with a two-sided quote so market_brier is computable and comfortably
+    // worse than Claude's.
+    const { createPrediction, resolvePrediction } = await import('@/lib/storage')
+    for (let i = 0; i < 3; i++) {
+      const p = createPrediction({
+        market_title: `Past ${i}`, ticker: `PAST-${i}`, category: 'Economics/Finance',
+        predicted_probability: 0.9, direction: 'YES', market_price: 0.5, edge_pct: 10,
+        source: 'autopilot', strategy: 'llm-divergence', actionable: true,
+        execution_price: 0.5, market_yes_bid: 0.45, market_yes_ask: 0.55,
+      })
+      resolvePrediction(p.id, 'YES')
+    }
+
+    await seedSettings({
+      dry_run: false,
+      require_calibration_to_go_live: true,
+      min_resolved_predictions_for_live: 3,
+      strategy_llm_divergence_enabled: true,
+      min_effective_edge_pct: 4,
+      min_confidence: 'HIGH',
+      kelly_fraction: 1,
+      kelly_haircut_high_pp: 0,
+    })
+    let placed = false
+    installKalshiFetchMock({
+      markets: [rawMarket({ ticker: 'GATE-2', title: 'Gate candidate 2', yes_ask: 50, yes_bid: 48 })],
+      onOrderPlaced: () => { placed = true },
+    })
+    mockClaudeScan([{ ticker: 'GATE-2', estimate: 90 }])
+
+    const { runAutopilotCycle } = await import('@/lib/autopilot')
+    const report = await runAutopilotCycle()
+
+    expect(report.status).toBe('ok')
+    expect(placed).toBe(true)
+    const buy = report.trades.find((t) => t.ticker === 'GATE-2' && !t.skip_reason)
+    expect(buy?.executed).toBe(true)
   })
 })
 
@@ -789,5 +871,197 @@ describe('runAutopilotCycle — SIT: dated-favorites follows Kalshi pagination c
     const buy2 = report.trades.find((t) => t.ticker === 'PAGE2-FAV')
     expect(buy1).toBeDefined()
     expect(buy2).toBeDefined()
+  })
+})
+
+describe('runAutopilotCycle — SIT: dry-run now logs predictions (was a total gap)', () => {
+  it('creates a Prediction record for a dry-run buy, not just a trade log entry', async () => {
+    await seedSettings({
+      dry_run: true,
+      strategy_llm_divergence_enabled: false,
+      strategy_dated_favorites_enabled: true,
+      dated_favorites_min_price_cents: 60,
+      dated_favorites_max_price_cents: 95,
+      dated_favorites_min_days: 1,
+      dated_favorites_max_days: 90,
+      min_effective_edge_pct: 0.5,
+      min_confidence: 'MEDIUM',
+      kelly_haircut_high_pp: 0,
+      kelly_haircut_medium_pp: 0,
+    })
+    installKalshiFetchMock({
+      markets: [
+        rawMarket({
+          ticker: 'DRY-LOG', title: 'Dry run logging check', yes_ask: 90, yes_bid: 88,
+          close_time: new Date(Date.now() + 60 * 86400000).toISOString(),
+        }),
+      ],
+    })
+
+    const { runAutopilotCycle } = await import('@/lib/autopilot')
+    const report = await runAutopilotCycle()
+    const buy = report.trades.find((t) => t.ticker === 'DRY-LOG' && !t.skip_reason)
+    expect(buy).toBeDefined()
+    expect(buy?.executed).toBe(false) // dry run — no real order
+
+    const { getPredictions } = await import('@/lib/storage')
+    const preds = getPredictions()
+    const pred = preds.find((p) => p.ticker === 'DRY-LOG')
+    expect(pred).toBeDefined()
+    expect(pred?.source).toBe('autopilot')
+    expect(pred?.strategy).toBe('dated-favorites')
+    expect(pred?.outcome).toBeUndefined() // still pending — auto-resolve settles it later
+  })
+
+  it('does not re-log the same still-unresolved ticker on a second cycle', async () => {
+    await seedSettings({
+      dry_run: true,
+      strategy_llm_divergence_enabled: false,
+      strategy_dated_favorites_enabled: true,
+      dated_favorites_min_price_cents: 60,
+      dated_favorites_max_price_cents: 95,
+      dated_favorites_min_days: 1,
+      dated_favorites_max_days: 90,
+      min_effective_edge_pct: 0.5,
+      min_confidence: 'MEDIUM',
+      kelly_haircut_high_pp: 0,
+      kelly_haircut_medium_pp: 0,
+      // Dry-run "buys" never become real Kalshi positions, so nothing in the
+      // mocked account changes between cycles — the SAME market qualifies
+      // again on cycle 2. Without the dedup guard this would double-log.
+      max_open_positions: 100,
+    })
+    installKalshiFetchMock({
+      markets: [
+        rawMarket({
+          ticker: 'DRY-DEDUP', title: 'Dedup check', yes_ask: 90, yes_bid: 88,
+          close_time: new Date(Date.now() + 60 * 86400000).toISOString(),
+        }),
+      ],
+    })
+
+    const { runAutopilotCycle } = await import('@/lib/autopilot')
+    await runAutopilotCycle()
+    await runAutopilotCycle()
+
+    const { getPredictions } = await import('@/lib/storage')
+    const matches = getPredictions().filter((p) => p.ticker === 'DRY-DEDUP')
+    expect(matches.length).toBe(1)
+  })
+})
+
+describe('runAutopilotCycle — SIT: circuit breaker covers UNREALIZED P&L, not just realized', () => {
+  it('halts on a mark-to-market paper loss even with zero realized loss today', async () => {
+    await seedSettings({
+      dry_run: true,
+      strategy_llm_divergence_enabled: false,
+      max_daily_loss_usd: 40, // tight cap
+    })
+    installKalshiFetchMock({
+      settlements: [], // zero realized P&L today
+      positions: [
+        // 100 contracts, cost basis $80 (avg entry 80c)
+        { ticker: 'LOSER', position: 100, market_exposure_dollars: 80 },
+      ],
+      marketByTicker: {
+        // live bid now 20c → mark-to-market value 100*0.20=$20, unrealized
+        // P&L = 20 - 80 = -$60, beyond the -$40 daily loss cap on its own.
+        LOSER: { ticker: 'LOSER', yes_bid: 20, yes_ask: 25, no_bid: 75, no_ask: 80 },
+      },
+    })
+
+    const { runAutopilotCycle } = await import('@/lib/autopilot')
+    const report = await runAutopilotCycle()
+
+    expect(report.status).toBe('halted')
+    expect(report.halted).toMatch(/[Cc]ircuit breaker/)
+    expect(report.halted).toMatch(/unrealized/)
+  })
+
+  it('does NOT halt when the combined realized+unrealized P&L stays within the cap', async () => {
+    await seedSettings({
+      dry_run: true,
+      strategy_llm_divergence_enabled: false,
+      max_daily_loss_usd: 1000, // generous cap
+    })
+    installKalshiFetchMock({
+      settlements: [],
+      positions: [
+        { ticker: 'MINOR', position: 100, market_exposure_dollars: 80 },
+      ],
+      marketByTicker: {
+        MINOR: { ticker: 'MINOR', yes_bid: 78, yes_ask: 79, no_bid: 21, no_ask: 22 },
+      },
+    })
+
+    const { runAutopilotCycle } = await import('@/lib/autopilot')
+    const report = await runAutopilotCycle()
+
+    expect(report.status).toBe('ok')
+  })
+})
+
+describe('runAutopilotCycle — SIT: order_type is tagged on every buy', () => {
+  it('tags taker by default', async () => {
+    await seedSettings({
+      dry_run: true,
+      strategy_llm_divergence_enabled: false,
+      strategy_dated_favorites_enabled: true,
+      dated_favorites_min_price_cents: 60,
+      dated_favorites_max_price_cents: 95,
+      dated_favorites_min_days: 1,
+      dated_favorites_max_days: 90,
+      min_effective_edge_pct: 0.5,
+      min_confidence: 'MEDIUM',
+      kelly_haircut_high_pp: 0,
+      kelly_haircut_medium_pp: 0,
+      use_maker_orders: false,
+    })
+    installKalshiFetchMock({
+      markets: [
+        rawMarket({
+          ticker: 'TAKER-1', title: 'Taker check', yes_ask: 90, yes_bid: 88,
+          close_time: new Date(Date.now() + 60 * 86400000).toISOString(),
+        }),
+      ],
+    })
+    const { runAutopilotCycle } = await import('@/lib/autopilot')
+    const report = await runAutopilotCycle()
+    const buy = report.trades.find((t) => t.ticker === 'TAKER-1' && !t.skip_reason)
+    expect(buy?.order_type).toBe('taker')
+    expect(report.use_maker_orders).toBe(false)
+  })
+
+  it('tags maker when use_maker_orders is on and a live bid is available', async () => {
+    await seedSettings({
+      dry_run: true,
+      strategy_llm_divergence_enabled: false,
+      strategy_dated_favorites_enabled: true,
+      dated_favorites_min_price_cents: 60,
+      dated_favorites_max_price_cents: 95,
+      dated_favorites_min_days: 1,
+      dated_favorites_max_days: 90,
+      min_effective_edge_pct: 0.5,
+      min_confidence: 'MEDIUM',
+      kelly_haircut_high_pp: 0,
+      kelly_haircut_medium_pp: 0,
+      use_maker_orders: true,
+    })
+    installKalshiFetchMock({
+      markets: [
+        rawMarket({
+          ticker: 'MAKER-1', title: 'Maker check', yes_ask: 90, yes_bid: 88,
+          close_time: new Date(Date.now() + 60 * 86400000).toISOString(),
+        }),
+      ],
+      marketByTicker: {
+        'MAKER-1': { ticker: 'MAKER-1', yes_bid: 88, yes_ask: 90, no_bid: 10, no_ask: 12 },
+      },
+    })
+    const { runAutopilotCycle } = await import('@/lib/autopilot')
+    const report = await runAutopilotCycle()
+    const buy = report.trades.find((t) => t.ticker === 'MAKER-1' && !t.skip_reason)
+    expect(buy?.order_type).toBe('maker')
+    expect(report.use_maker_orders).toBe(true)
   })
 })

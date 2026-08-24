@@ -4,7 +4,7 @@ import { getViews, getSession, getSettings, getCalibrationStats, createPredictio
 import { buildScannerSystemPrompt, buildScannerUserMessage } from '@/lib/prompts'
 import { callClaude } from '@/lib/claude'
 import { fetchMarkets } from '@/lib/kalshi'
-import { MarketInput } from '@/lib/types'
+import { MarketInput, Lesson } from '@/lib/types'
 import { getSignalsForMarkets } from '@/lib/signals'
 import { getWebContextForMarkets } from '@/lib/search'
 import { z } from 'zod'
@@ -601,10 +601,27 @@ export async function runScan(params: RunScanParams = {}): Promise<RunScanResult
   const session = getSession()
   const calibration = getCalibrationStats()
 
-  // Get lessons relevant to the category being scanned (or all categories if no filter)
-  const scanCategory = category && category !== 'All' ? category : 'Other/General'
-  const scanKeywords = category && category !== 'All' ? [category.toLowerCase()] : []
-  const relevantLessons = getRelevantLessons(scanCategory, scanKeywords, 5)
+  // Get lessons relevant to the actual candidate pool. Previously pinned to a
+  // single category/keyword pair derived from the `category` filter param —
+  // but that param is usually undefined here (autopilot never passes one,
+  // and neither does the manual scanner's "All categories" view), which
+  // pinned scanCategory to 'Other/General' with zero keywords in exactly the
+  // real-money autopilot path. getRelevantLessons then only surfaces a
+  // non-'Other/General' lesson if it happens to be <30 days old (see its
+  // scoring), regardless of topical relevance. Query once per distinct
+  // category actually present in this batch instead, and merge/dedupe by
+  // lesson id. Deliberately NOT touching `category` itself — it also filters
+  // the market pool above (inCategory), a separate, correctly-functioning use.
+  const candidateCategories = category && category !== 'All'
+    ? [category]
+    : Array.from(new Set(normalized.map((m) => m.category ?? 'Other/General')))
+  const lessonById = new Map<string, Lesson>()
+  for (const cat of candidateCategories) {
+    for (const l of getRelevantLessons(cat, [cat.toLowerCase()], 5)) {
+      lessonById.set(l.id, l)
+    }
+  }
+  const relevantLessons = Array.from(lessonById.values()).slice(0, 5)
 
   const systemPrompt = buildScannerSystemPrompt(calibration, relevantLessons)
   const userMessage = buildScannerUserMessage(normalized, views, session, signalMap, webContextMap, calibration)

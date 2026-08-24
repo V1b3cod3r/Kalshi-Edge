@@ -11,6 +11,19 @@ export async function extractLessonForPrediction(
   prediction: Prediction,
   apiKey: string
 ): Promise<void> {
+  // Mechanical strategies (dated-favorites, settlement-snipe) take no LLM
+  // input at all — their losses are expected variance around a documented,
+  // deliberately-conservative model, not a diagnosable REASONING error. A
+  // postmortem here forces one of the reasoning-error mistake_type labels
+  // (overconfidence, anchoring, ...) onto a loss that was never a reasoning
+  // call in the first place, and getRelevantLessons then feeds that
+  // mislabeled signal straight into the LLM scanner's prompt. Skip entirely
+  // rather than extract-then-filter — cheaper (no wasted Claude call) and
+  // keeps the lessons pool free of mislabeled entries from the start.
+  // undefined/'llm-divergence' (legacy rows predate the strategy field and
+  // were all the LLM scanner) are the only strategies this runs for.
+  if (prediction.strategy && prediction.strategy !== 'llm-divergence') return
+
   try {
     const client = new Anthropic({ apiKey })
 
@@ -72,6 +85,7 @@ Output this JSON object:
       what_went_wrong: parsed.what_went_wrong || '',
       what_to_do_differently: parsed.what_to_do_differently || '',
       mistake_type: parsed.mistake_type || 'other',
+      strategy: prediction.strategy,
     })
 
     updatePrediction(prediction.id, { lesson_id: lesson.id })
